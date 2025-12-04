@@ -1,4 +1,13 @@
 import logging
+import os
+import sys
+
+# ➜ make sure Python can see the parent folder where db.py is
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(CURRENT_DIR)
+if PARENT_DIR not in sys.path:
+    sys.path.append(PARENT_DIR)
+
 from telegram import (
     Update,
     KeyboardButton,
@@ -16,7 +25,7 @@ from telegram.ext import (
     filters
 )
 
-from db import init_db, upsert_creator  # ⬅️ our DB helpers
+from db import init_db, upsert_creator  # our DB helpers
 
 # === YOUR CREATOR BOT TOKEN ===
 BOT_TOKEN = "8280706073:AAED9i2p0TP42pPf9vMXoTt_HYGxqEuyy2w"
@@ -35,7 +44,6 @@ logger = logging.getLogger(__name__)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # For now, always ask for login (number) on /start
     btn = KeyboardButton(text="📲 Share Phone Number", request_contact=True)
     kb = ReplyKeyboardMarkup([[btn]], resize_keyboard=True, one_time_keyboard=True)
 
@@ -49,10 +57,8 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact
     user = update.effective_user
 
-    # store phone in user_data for this login flow
     context.user_data["phone"] = contact.phone_number
 
-    # mark that we now expect referral code text
     WAITING_REFERRAL.add(user.id)
     TEMP_REFERRALS[user.id] = None
 
@@ -66,7 +72,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = (update.message.text or "").strip()
 
-    # handle referral step
     if user.id in WAITING_REFERRAL:
         if msg.lower() == "no":
             ref = None
@@ -78,7 +83,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         phone = context.user_data.get("phone", "")
 
-        # save / update creator in DB
         upsert_creator(
             tg_id=user.id,
             username=user.username or "",
@@ -90,7 +94,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context, "You’re now logged in 🎉")
         return
 
-    # any other random text
     await update.message.reply_text("Use the buttons below 👇")
 
 
@@ -130,9 +133,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    # make sure DB table exists
     init_db()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.CONTACT, save_contact))

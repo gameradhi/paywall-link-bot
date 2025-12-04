@@ -20,10 +20,13 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from db import get_link_by_code, increment_link_click
+from db import get_link_by_code, record_unlock_payment
 
 # === MAIN BOT TOKEN ===
 BOT_TOKEN = "8301086845:AAFFFiYItPrAwgQmWLhgmS_TztqcjWx5S28"
+
+# Force join channel (will use later)
+FORCE_CHANNEL = "@TeleLinkUpdate"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -36,12 +39,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text or ""
 
-    # if /start CODE  → paywall
+    # /start CODE → paywall
     if text.startswith("/start") and len(text.split()) > 1:
         code = text.split()[1]
         return await handle_paywall(update, context, code)
 
-    # normal /start → menu
+    # normal /start (no code)
     keyboard = [
         [
             InlineKeyboardButton("👤 Continue as User", callback_data="as_user"),
@@ -84,7 +87,9 @@ async def handle_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, cod
 
 async def pay_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = query.from_user
     await query.answer()
+
     data = query.data
     code = data.split(":")[1]
 
@@ -96,8 +101,9 @@ async def pay_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     original_url = link["original_url"]
     price = link["price"]
 
-    # temporary: treat as paid
-    increment_link_click(code, price)
+    # TODO: here we will integrate real payment later.
+    # For now, we treat as if payment succeeded
+    record_unlock_payment(user_tg_id=user.id, link_code=code, amount=price)
 
     await query.edit_message_text(
         "🎉 *Payment successful!*\nUnlocking link...",
@@ -110,7 +116,6 @@ async def pay_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # for now just ignore clicks on 'as_user'
     await update.callback_query.answer("User mode coming soon 🙂", show_alert=False)
 
 

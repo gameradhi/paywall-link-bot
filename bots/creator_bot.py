@@ -16,12 +16,14 @@ from telegram.ext import (
     filters
 )
 
+from db import init_db, upsert_creator  # ⬅️ our DB helpers
+
 # === YOUR CREATOR BOT TOKEN ===
 BOT_TOKEN = "8280706073:AAED9i2p0TP42pPf9vMXoTt_HYGxqEuyy2w"
 
-# temporary storage (later DB)
-CREATORS = {}
-WAITING_REFERRAL = set()
+# temporary state for referral during first login
+WAITING_REFERRAL = set()      # set of tg_id waiting for referral input
+TEMP_REFERRALS = {}           # tg_id -> referral_code or None
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -33,11 +35,7 @@ logger = logging.getLogger(__name__)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # if already logged in
-    if user.id in CREATORS:
-        await show_main_menu(update, context, "Welcome back Creator 👨‍💻")
-        return
-
+    # For now, always ask for login (number) on /start
     btn = KeyboardButton(text="📲 Share Phone Number", request_contact=True)
     kb = ReplyKeyboardMarkup([[btn]], resize_keyboard=True, one_time_keyboard=True)
 
@@ -51,12 +49,12 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact
     user = update.effective_user
 
-    CREATORS[user.id] = {
-        "phone": contact.phone_number,
-        "referrer": None,
-    }
+    # store phone in user_data for this login flow
+    context.user_data["phone"] = contact.phone_number
 
+    # mark that we now expect referral code text
     WAITING_REFERRAL.add(user.id)
+    TEMP_REFERRALS[user.id] = None
 
     await update.message.reply_text(
         "Number verified ✅\n\nDo you have referral code?\n• Send it now\n• Or type 'no'",
@@ -66,18 +64,33 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    msg = update.message.text.strip()
+    msg = (update.message.text or "").strip()
 
+    # handle referral step
     if user.id in WAITING_REFERRAL:
         if msg.lower() == "no":
-            CREATORS[user.id]["referrer"] = None
+            ref = None
         else:
-            CREATORS[user.id]["referrer"] = msg
-        
+            ref = msg
+
         WAITING_REFERRAL.remove(user.id)
+        TEMP_REFERRALS[user.id] = ref
+
+        phone = context.user_data.get("phone", "")
+
+        # save / update creator in DB
+        upsert_creator(
+            tg_id=user.id,
+            username=user.username or "",
+            full_name=user.full_name or "",
+            phone=phone,
+            referred_by=ref,
+        )
+
         await show_main_menu(update, context, "You’re now logged in 🎉")
         return
 
+    # any other random text
     await update.message.reply_text("Use the buttons below 👇")
 
 
@@ -114,14 +127,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     await update.callback_query.edit_message_text(mapping[data])
-    # Later we’ll return to menu after actions
 
 
 def main():
+    # make sure DB table exists
+    init_db()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.CONTACT, save_contact))
-    app.add_handler(MessageHandler(filters.TEXT, text_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.run_polling()
 

@@ -620,4 +620,82 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
                 ),
             )
-      
+      return
+
+        # choose method if both available
+        if upi and bank_acc and bank_ifsc:
+            buttons = [
+                [InlineKeyboardButton("Withdraw to UPI", callback_data="withdraw_upi")],
+                [InlineKeyboardButton("Withdraw to Bank", callback_data="withdraw_bank")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
+            ]
+            await query.edit_message_text(
+                f"Your balance: ₹{bal}\n\nChoose withdrawal method:",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return
+
+        # single method
+        if upi:
+            context.user_data["withdraw_method"] = "upi"
+        else:
+            context.user_data["withdraw_method"] = "bank"
+
+        context.user_data["state"] = "awaiting_withdraw_amount"
+        await query.edit_message_text(
+            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # WITHDRAW UPI / BANK (choice)
+    if data == "withdraw_upi":
+        wallet = get_creator_wallet(user.id)
+        bal = wallet["wallet_balance"] if wallet else 0
+
+        context.user_data["withdraw_method"] = "upi"
+        context.user_data["state"] = "awaiting_withdraw_amount"
+
+        await query.edit_message_text(
+            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "withdraw_bank":
+        wallet = get_creator_wallet(user.id)
+        bal = wallet["wallet_balance"] if wallet else 0
+
+        context.user_data["withdraw_method"] = "bank"
+        context.user_data["state"] = "awaiting_withdraw_amount"
+
+        await query.edit_message_text(
+            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # BACK TO MENU
+    if data == "back_menu":
+        await show_main_menu(update, context)
+        return
+
+
+# ----------------- MAIN -----------------
+
+
+def main():
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(MessageHandler(filters.CONTACT, save_contact))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()

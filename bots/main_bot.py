@@ -25,8 +25,9 @@ from db import get_link_by_code, record_unlock_payment
 # === MAIN BOT TOKEN ===
 BOT_TOKEN = "8301086845:AAFFFiYItPrAwgQmWLhgmS_TztqcjWx5S28"
 
-# Force join channel (kept for later)
-FORCE_CHANNEL = "@TeleLinkUpdate"
+# === FORCE JOIN CHANNEL ===
+FORCE_CHANNEL_ID = -1003472900442
+FORCE_CHANNEL_LINK = "https://t.me/TeleLinkUpdate"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -34,6 +35,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ------------- FORCE JOIN -------------
+
+async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    try:
+        member = await context.bot.get_chat_member(FORCE_CHANNEL_ID, user.id)
+        if member.status in ("member", "administrator", "creator"):
+            return True
+    except Exception as e:
+        logger.warning("Force-join check failed: %s", e)
+        return True  # don't block if check breaks
+
+    text = (
+        "🔔 To use *TELE LINK*, please join our updates channel first.\n\n"
+        "After joining, tap *I Joined*."
+    )
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📢 Join TELE LINK Updates", url=FORCE_CHANNEL_LINK)],
+            [InlineKeyboardButton("✅ I Joined", callback_data="check_sub")],
+        ]
+    )
+
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=kb
+        )
+    return False
+
+
+# ------------- MAIN MENU -------------
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup(
@@ -45,7 +80,7 @@ def main_menu_keyboard():
                     url="https://t.me/TeleShortLinkCreatorBot",
                 )
             ],
-            [InlineKeyboardButton("ℹ️ How it works", callback_data="how")],
+            [InlineKeyboardButton("ℹ️ How TELE LINK works", callback_data="how")],
         ]
     )
 
@@ -54,7 +89,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = (
         f"Hey {user.first_name or 'there'} 👋\n\n"
-        "Welcome to *TeleShortLink*.\n\n"
+        "*Welcome to TELE LINK*\n\n"
         "• Creators can lock any link behind a small payment.\n"
         "• Users pay once to unlock and access the content.\n\n"
         "Choose how you want to continue:"
@@ -69,7 +104,12 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ------------- COMMANDS -------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
+
     text = update.message.text or ""
 
     # /start CODE → paywall
@@ -82,10 +122,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
     await show_main_menu(update, context)
 
 
+# ------------- PAYWALL -------------
+
 async def handle_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
+    if not await ensure_force_join(update, context):
+        return
+
     link = get_link_by_code(code)
     if not link:
         await update.message.reply_text("⛔ Invalid or expired link.")
@@ -99,7 +146,7 @@ async def handle_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, cod
     kb = InlineKeyboardMarkup([[btn_pay], [btn_home]])
 
     await update.message.reply_text(
-        f"🔒 *This content is locked*\n\n"
+        f"🔒 *This content is locked (TELE LINK)*\n\n"
         f"💰 Price: ₹{price}\n\n"
         "Tap *Unlock* to simulate payment and open the link.\n"
         "_(Real payment gateway will be connected later.)_",
@@ -109,6 +156,9 @@ async def handle_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, cod
 
 
 async def pay_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
+
     query = update.callback_query
     user = query.from_user
     await query.answer()
@@ -124,8 +174,7 @@ async def pay_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     original_url = link["original_url"]
     price = link["price"]
 
-    # TODO: here we will integrate real payment later.
-    # For now, we treat as if payment succeeded
+    # TODO: integrate real payment gateway here
     record_unlock_payment(user_tg_id=user.id, link_code=code, amount=price)
 
     await query.edit_message_text(
@@ -138,10 +187,24 @@ async def pay_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ------------- GENERIC BUTTONS -------------
+
 async def generic_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
+
     query = update.callback_query
     data = query.data
     await query.answer()
+
+    # Re-check after "I Joined"
+    if data == "check_sub":
+        if await ensure_force_join(update, context):
+            await query.message.reply_text(
+                "✅ Thanks for joining TELE LINK Updates!\nHere is the main menu:",
+            )
+            await show_main_menu(update, context)
+        return
 
     # Main menu
     if data == "back_menu":
@@ -151,11 +214,13 @@ async def generic_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # How it works
     if data == "how":
         text = (
-            "ℹ️ *How TeleShortLink works*\n\n"
-            "1. Creators generate a special paywall link.\n"
+            "ℹ️ *How TELE LINK works*\n\n"
+            "1. Creators generate a TELE LINK paywall link.\n"
             "2. Users open the link in this bot.\n"
             "3. After payment, the bot unlocks the original URL.\n\n"
-            "Creators earn 90%, you earn 10%, and referrers get 5% from your share.\n\n"
+            "Creators keep 90% of the price.\n"
+            "You, as the platform, keep 10%.\n"
+            "Referrers earn 5% from your share.\n\n"
             "To start earning, click *Creator Panel* and create your first link."
         )
         await query.edit_message_text(
@@ -171,7 +236,7 @@ async def generic_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "as_user":
         await query.edit_message_text(
             "👤 *User Mode*\n\n"
-            "Just open any TeleShortLink link you receive from creators.\n"
+            "Just open any TELE LINK you receive from creators.\n"
             "This bot will handle the payment and unlock (test mode right now).",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(
@@ -180,6 +245,8 @@ async def generic_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+
+# ------------- MAIN -------------
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()

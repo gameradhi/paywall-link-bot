@@ -4,7 +4,6 @@ from psycopg2.extras import RealDictCursor
 from typing import Optional
 import random
 import string
-from datetime import datetime
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -19,45 +18,48 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Creators table
+    # ---- CREATORS ----
+    # base table (minimal, so old DB is OK)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS creators (
             id SERIAL PRIMARY KEY,
-            tg_id BIGINT UNIQUE NOT NULL,
-            username TEXT,
-            full_name TEXT,
-            phone TEXT,
-            referral_code TEXT UNIQUE,
-            referred_by_code TEXT,
-            wallet_balance INTEGER DEFAULT 0,        -- ₹ available to withdraw
-            total_earned INTEGER DEFAULT 0,          -- all time creator earnings
-            referral_earned INTEGER DEFAULT 0,       -- all time from referrals
-            upi_id TEXT,
-            bank_account TEXT,
-            bank_ifsc TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW()
+            tg_id BIGINT UNIQUE NOT NULL
         );
         """
     )
+    # upgrade / add missing columns safely
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS username TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS full_name TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS phone TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS referred_by_code TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS wallet_balance INTEGER DEFAULT 0;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS total_earned INTEGER DEFAULT 0;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS referral_earned INTEGER DEFAULT 0;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS upi_id TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS bank_account TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS bank_ifsc TEXT;")
+    cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();")
 
-    # Links table
+    # ---- LINKS ----
+    # keep column name creator_id (matches your existing DB)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS links (
             id SERIAL PRIMARY KEY,
-            creator_tg_id BIGINT NOT NULL,
+            creator_id BIGINT NOT NULL,
             original_url TEXT NOT NULL,
             price INTEGER NOT NULL,
-            code TEXT UNIQUE NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            clicks INTEGER DEFAULT 0,          -- total unlocks
-            earnings INTEGER DEFAULT 0         -- total paid by users for this link
+            code TEXT UNIQUE NOT NULL
         );
         """
     )
+    cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();")
+    cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS clicks INTEGER DEFAULT 0;")
+    cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS earnings INTEGER DEFAULT 0;")
 
-    # Transactions (unlock payments)
+    # ---- TRANSACTIONS ----
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS transactions (
@@ -75,7 +77,7 @@ def init_db():
         """
     )
 
-    # Platform stats (single row, id = 1)
+    # ---- PLATFORM STATS ----
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS platform_stats (
@@ -89,7 +91,7 @@ def init_db():
         "INSERT INTO platform_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;"
     )
 
-    # Withdrawals
+    # ---- WITHDRAWALS ----
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS withdrawals (
@@ -245,6 +247,7 @@ def get_creator_wallet(tg_id: int):
 def create_paid_link(creator_tg_id: int, original_url: str, price: int) -> str:
     """
     Creates a new paid link, returns the unique code used in /start.
+    Uses column 'creator_id' to match existing DB.
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -258,7 +261,7 @@ def create_paid_link(creator_tg_id: int, original_url: str, price: int) -> str:
 
     cur.execute(
         """
-        INSERT INTO links (creator_tg_id, original_url, price, code)
+        INSERT INTO links (creator_id, original_url, price, code)
         VALUES (%s, %s, %s, %s)
         RETURNING id;
         """,
@@ -287,7 +290,7 @@ def get_links_for_creator(creator_tg_id: int):
     cur.execute(
         """
         SELECT * FROM links
-        WHERE creator_tg_id = %s
+        WHERE creator_id = %s
         ORDER BY created_at DESC;
         """,
         (creator_tg_id,),
@@ -308,7 +311,6 @@ def record_unlock_payment(user_tg_id: int, link_code: str, amount: int):
       - 10% to platform
       - From platform 10%, 5% goes to referrer (if creator has one)
       - Remaining stays with platform
-    All amounts in INTEGER ₹, with floor rounding.
     """
 
     conn = get_conn()
@@ -322,7 +324,7 @@ def record_unlock_payment(user_tg_id: int, link_code: str, amount: int):
         conn.close()
         return
 
-    creator_tg_id = link["creator_tg_id"]
+    creator_tg_id = link["creator_id"]
 
     # Fetch creator
     cur.execute("SELECT * FROM creators WHERE tg_id = %s;", (creator_tg_id,))

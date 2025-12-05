@@ -21,7 +21,7 @@ from telegram.ext import (
 
 # ============ BASIC CONFIG ============
 
-BOT_TOKEN = "8301086845:AAFFFlYtPrAwgQmWlhgmsT_ztqcjWx5S2B"
+BOT_TOKEN = "8301086845:AAFFFiYItPrAwgQmWLhgmS_TztqcjWx5S28"
 
 # Force join channel
 FORCE_CHANNEL_USERNAME = "TeleLinkUpdate"   # without @

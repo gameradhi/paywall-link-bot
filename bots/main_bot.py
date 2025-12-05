@@ -39,7 +39,7 @@ CURRENCY_SYMBOL = "₹"
 CF_BASE_URL = "https://sandbox.cashfree.com/pg"
 CF_APP_ID = "TEST108989973cdf272dd10fda500fcd79989801"
 CF_SECRET = "cfsk_ma_test_7c3535ef3e930f31810a450c342308b4_d6795ca8"
-CF_API_VERSION = "2022-09-01"
+CF_API_VERSION = "2023-08-01"
 CF_CURRENCY = "INR"
 
 # NOTE for LIVE later:

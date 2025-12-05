@@ -1,12 +1,6 @@
-# bots/main_bot.py
-# TELE LINK – Main/User Bot with Cashfree TEST payment links
-# Bot: @TeleShortLinkBot
-
 import logging
-import uuid
-from datetime import datetime
+from typing import Set, Tuple
 
-import requests
 from telegram import (
     Update,
     InlineKeyboardMarkup,
@@ -14,62 +8,42 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
 )
 
-# ============ BASIC CONFIG ============
+# ================== CONFIG ==================
 
 BOT_TOKEN = "8301086845:AAFFFiYItPrAwgQmWLhgmS_TztqcjWx5S28"
 
-# Force join channel
+# Force-join channel
 FORCE_CHANNEL_USERNAME = "TeleLinkUpdate"   # without @
-FORCE_CHANNEL_ID = -1003472900442          # your updates channel ID
+FORCE_CHANNEL_ID = -1003472900442
 
-# Admin / owner
-OWNER_ID = 8545081401                      # @AntManIndia
-OWNER_USERNAME = "AntManIndia"
-
+# Branding
 BRAND_NAME = "TELE LINK"
 CURRENCY_SYMBOL = "₹"
 
-# ============ CASHFREE TEST CONFIG ============
+# Creator bot username (for Creator Panel button)
+CREATOR_BOT_USERNAME = "TeleShortLinkCreatorBot"
 
-CF_BASE_URL = "https://sandbox.cashfree.com/pg"
-CF_APP_ID = "TEST108989973cdf272dd10fda500fcd79989801"
-CF_SECRET = "cfsk_ma_test_7c3535ef3e930f31810a450c342308b4_d6795ca8"
-CF_API_VERSION = "2022-09-01"
-CF_CURRENCY = "INR"
+# ---- TEST paid link (for now we support only one hard-coded link) ----
+TEST_SHORT_CODE = "pl_TEST001"
+TEST_PRICE = 20.0
 
-# NOTE for LIVE later:
-# CF_BASE_URL = "https://api.cashfree.com/pg"
-# CF_APP_ID = "<LIVE APP ID>"
-# CF_SECRET = "<LIVE SECRET>"
+# Put any *private* URL here – this is what will be revealed after payment (TEST only)
+TEST_LOCKED_URL = "https://example.com/your-secret-link"
 
-# ============ SIMPLE IN-MEMORY STORAGE (TEST ONLY) ============
+# 👉 IMPORTANT:
+# Paste your real Cashfree *TEST* payment link URL here
+# (the one that opens the “Payment Success ₹20” screen you showed).
+TEST_CASHFREE_LINK_URL = "https://payments-test.cashfree.com/links/YOUR_TEST_LINK_ID"
 
-# short_code -> dict(original_url, price, creator_id)
-PAID_LINKS: dict[str, dict] = {}
+# In-memory record of who has already unlocked which short_code (TEST only)
+UNLOCKED_USERS: Set[Tuple[int, str]] = set()
 
-# order_id -> dict(user_id, short_code, amount)
-PENDING_ORDERS: dict[str, dict] = {}
-
-
-def seed_test_link() -> None:
-    """
-    Create one test paid link in memory so you can test the full payment flow.
-    Later this will be replaced with DB links from Creator Bot.
-    """
-    short_code = "TEST001"
-    PAID_LINKS[short_code] = {
-        "original_url": "https://example.com/my-super-secret-file",
-        "price": 20.0,
-        "creator_id": OWNER_ID,
-    }
-
-
-# ============ LOGGING ============
+# ================== LOGGING ==================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -78,313 +52,259 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============ HELPER: FORCE JOIN ============
+# ================== HELPERS ==================
 
-async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+
+async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
-    Returns True if user is already in updates channel or force-join is disabled.
-    If not joined, sends join prompt and returns False.
+    Return True if user is a member of the force-join channel.
+    If the check fails (bot not admin / channel not found), we fail-open (return True).
     """
-    if not FORCE_CHANNEL_ID:
-        return True  # force join disabled
-
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-
+    bot = context.bot
     try:
-        member = await context.bot.get_chat_member(FORCE_CHANNEL_ID, user.id)
-        if member.status in ("member", "administrator", "creator"):
+        member = await bot.get_chat_member(FORCE_CHANNEL_ID, user_id)
+        if member.status in ("member", "administrator", "creator", "owner"):
             return True
-    except Exception as e:
-        # If channel not found / bot not admin etc., log & skip force-join
+        return False
+    except Exception as e:  # noqa: BLE001
         logger.warning("Force-join check failed: %s", e)
+        # To avoid locking everyone out because of a config issue, we allow them.
         return True
 
-    # Not a member → show join button
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    text=f"📢 Join TELE LINK Updates",
-                    url=f"https://t.me/{FORCE_CHANNEL_USERNAME}",
-                )
-            ],
-            [InlineKeyboardButton(text="✅ I Joined", callback_data="CHECK_JOIN")],
-        ]
+
+async def send_main_menu(chat_id: int, context: ContextTypes.DEFAULT_TYPE, first_name: str) -> None:
+    text = (
+        f"Hey {first_name} 👋\n\n"
+        f"Welcome to *{BRAND_NAME}*.\n\n"
+        "• Creators can lock any link behind a small one-time payment.\n"
+        "• Users pay once to unlock and access the content forever.\n\n"
+        "Choose how you want to continue:"
     )
+
+    keyboard = [
+        [InlineKeyboardButton("🙋‍♂️ Continue as User", callback_data="menu:as_user")],
+        [InlineKeyboardButton("👨‍💻 Creator Panel", url=f"https://t.me/{CREATOR_BOT_USERNAME}")],
+        [InlineKeyboardButton("ℹ️ How TELE LINK works", callback_data="menu:how_it_works")],
+    ]
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text="To use TELE LINK, please join our updates channel first.",
-        reply_markup=keyboard,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-    return False
 
 
-# ============ HELPER: MAIN MENU ============
-
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+async def send_force_join_message(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    payload: str,
+) -> None:
+    """
+    Ask user to join the updates channel.
+    `payload` is what we should continue with after they press 'I Joined':
+      - 'main'          → go back to main menu
+      - 'pl_<short>'    → resume paid-link flow for that short code
+    """
+    text = (
+        "📢 *Join TELE LINK Updates* first.\n\n"
+        "We share important updates, tips, and creator news there.\n\n"
+        "After joining the channel, tap *I Joined* below."
+    )
+    keyboard = [
         [
-            [InlineKeyboardButton("🧑‍💻 Continue as User", callback_data="AS_USER")],
-            [InlineKeyboardButton("👨‍🎨 Continue as Creator", callback_data="AS_CREATOR")],
-            [InlineKeyboardButton("❓ Help", callback_data="HELP")],
-        ]
+            InlineKeyboardButton(
+                "🔔 Join TELE LINK Updates",
+                url=f"https://t.me/{FORCE_CHANNEL_USERNAME}",
+            )
+        ],
+        [InlineKeyboardButton("✅ I Joined", callback_data=f"joined:{payload}")],
+    ]
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
 
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    user = update.effective_user
+async def send_paid_link_menu(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    short_code: str,
+) -> None:
+    """
+    Show the lock screen + Pay + I Paid (TEST) buttons for a paid link.
+    For now we support only TEST_SHORT_CODE and always unlock in TEST without real verification.
+    """
+    price = TEST_PRICE
+    pay_button_row = []
+    if TEST_CASHFREE_LINK_URL and TEST_CASHFREE_LINK_URL.startswith("http"):
+        pay_button_row.append(
+            InlineKeyboardButton(
+                f"💳 Pay {CURRENCY_SYMBOL}{price:.0f} (Cashfree TEST)",
+                url=TEST_CASHFREE_LINK_URL,
+            )
+        )
+    else:
+        # Fallback: simple info button, no URL
+        pay_button_row.append(
+            InlineKeyboardButton(
+                f"💳 Pay {CURRENCY_SYMBOL}{price:.0f} (Cashfree TEST)",
+                callback_data="info:cashfree_test",
+            )
+        )
+
+    keyboard = [
+        pay_button_row,
+        [InlineKeyboardButton("✅ I have paid (TEST – unlock)", callback_data=f"test_paid:{short_code}")],
+        [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="menu:back_main")],
+    ]
 
     text = (
-        f"Hey {user.first_name} 👋\n\n"
-        f"Welcome to {BRAND_NAME}.\n\n"
-        "• Creators can lock any link behind a small payment.\n"
-        "• Users pay once to unlock and access the content.\n\n"
-        "Choose how you want to continue:"
+        "🔒 *This link is locked*\n\n"
+        f"To unlock this content, please pay *{CURRENCY_SYMBOL}{price:.0f}*.\n\n"
+        "_Note: This is TEST mode, no real money is moving. In LIVE mode the bot "
+        "will verify your payment automatically with Cashfree before unlocking._"
     )
 
     await context.bot.send_message(
         chat_id=chat_id,
         text=text,
-        reply_markup=main_menu_keyboard(),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
 
 
-# ============ CASHFREE HELPER ============
+# ================== HANDLERS ==================
 
-def create_cashfree_payment_link(
-    *,
-    amount: float,
-    short_code: str,
-    user_id: int,
-) -> str:
-    """
-    Calls Cashfree TEST Payment Links API and returns the URL.
-    Raises Exception on any error.
-    """
-    url = f"{CF_BASE_URL}/links"
-
-    order_id = f"{short_code}-{user_id}-{uuid.uuid4().hex[:8]}"
-    payload = {
-        "link_amount": amount,
-        "link_currency": CF_CURRENCY,
-        "link_id": order_id,
-        "link_purpose": f"{BRAND_NAME} – Unlock content {short_code}",
-        "customer_details": {
-            "customer_name": "TeleLink User",
-            "customer_phone": "9999999999",
-            "customer_email": "test@example.com",
-        },
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-version": CF_API_VERSION,
-        "x-client-id": CF_APP_ID,
-        "x-client-secret": CF_SECRET,
-    }
-
-    logger.info("Creating Cashfree test link: %s", payload)
-
-    resp = requests.post(url, json=payload, headers=headers, timeout=15)
-    logger.info(
-        "Cashfree response [%s]: %s", resp.status_code, resp.text.replace("\n", " ")
-    )
-
-    try:
-        data = resp.json()
-    except Exception:
-        data = {"raw": resp.text}
-
-    if resp.status_code != 200:
-        msg = data.get("message") or data.get("error") or str(data)
-        raise Exception(f"Cashfree error (status {resp.status_code}): {msg}")
-
-    # Payment Links API returns "link_url"
-    payment_url = (
-        data.get("link_url")
-        or data.get("payment_link")
-        or data.get("url")
-    )
-
-    if not payment_url:
-        raise Exception(f"Cashfree success but no link_url found. Response: {data}")
-
-    # store minimal info for later (webhook / manual check)
-    PENDING_ORDERS[order_id] = {
-        "user_id": user_id,
-        "short_code": short_code,
-        "amount": amount,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-
-    return payment_url
-
-
-# ============ COMMAND HANDLERS ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-
-    # 1) Check force join
-    if not await ensure_force_join(update, context):
-        return
-
-    # 2) Deep-link parameter (e.g. /start pl_TEST001)
+    chat_id = update.effective_chat.id
     args = context.args
-    if args:
-        param = args[0]
-        if param.startswith("pl_"):
-            short_code = param.replace("pl_", "", 1)
-            await start_with_paid_link(update, context, short_code)
+
+    # If /start came with a paid-link short code param
+    if args and args[0].startswith("pl_"):
+        short_code = args[0]
+
+        # Only TEST short code is supported right now
+        if short_code != TEST_SHORT_CODE:
+            await update.message.reply_text("❌ Unknown or expired paid link.")
             return
 
-    # 3) Normal start → main menu
-    await show_main_menu(update, context)
+        joined = await check_force_join(user.id, context)
+        if not joined:
+            await send_force_join_message(chat_id, context, payload=short_code)
+            return
 
-
-async def start_with_paid_link(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    short_code: str,
-) -> None:
-    """
-    User opened t.me/bot?start=pl_SHORTCODE
-    """
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    # Ensure still in channel (in case they left & click link later)
-    if not await ensure_force_join(update, context):
+        await send_paid_link_menu(chat_id, context, short_code)
         return
 
-    info = PAID_LINKS.get(short_code)
-    if not info:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="❌ This paid link is invalid or expired.",
-        )
+    # Normal /start → show main menu (after force-join)
+    joined = await check_force_join(user.id, context)
+    if not joined:
+        await send_force_join_message(chat_id, context, payload="main")
         return
 
-    price = float(info["price"])
-
-    try:
-        pay_url = create_cashfree_payment_link(
-            amount=price,
-            short_code=short_code,
-            user_id=user_id,
-        )
-    except Exception as e:
-        logger.error("Failed to create Cashfree test link: %s", e)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "❌ Failed to create Cashfree TEST payment link.\n"
-                f"Error from Cashfree: {e}\n\n"
-                "If this keeps happening, please send this message to admin."
-            ),
-        )
-        return
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    text=f"💳 Pay {CURRENCY_SYMBOL}{price:.2f} (Cashfree TEST)",
-                    url=pay_url,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Back to Main Menu", callback_data="BACK_MAIN"
-                )
-            ],
-        ]
-    )
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"Here is your *TEST* payment link for `{short_code}`.\n\n"
-            "Complete the payment on Cashfree's sandbox page.\n"
-            "_No real money will be taken in TEST mode._"
-        ),
-        parse_mode="Markdown",
-        reply_markup=keyboard,
-    )
+    await send_main_menu(chat_id, context, user.first_name or "there")
 
 
-# ============ CALLBACK HANDLER ============
-
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-
     data = query.data
+    user = query.from_user
+    chat_id = query.message.chat.id
 
-    if data == "CHECK_JOIN":
-        # Re-run /start after user says "I Joined"
-        await start(update, context)
+    logger.info("Callback data from %s: %s", user.id, data)
+
+    # User pressed "I Joined"
+    if data.startswith("joined:"):
+        payload = data.split(":", 1)[1]
+        joined = await check_force_join(user.id, context)
+        if not joined:
+            await query.answer("Please join the channel first 🙂", show_alert=True)
+            return
+
+        # Remove the old message to keep chat clean
+        try:
+            await query.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+
+        if payload == "main":
+            await send_main_menu(chat_id, context, user.first_name or "there")
+        elif payload.startswith("pl_"):
+            await send_paid_link_menu(chat_id, context, payload)
         return
 
-    if data == "BACK_MAIN":
-        await show_main_menu(update, context)
+    # Main-menu navigation
+    if data == "menu:back_main" or data == "menu:as_user":
+        try:
+            await query.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        await send_main_menu(chat_id, context, user.first_name or "there")
         return
 
-    if data == "AS_USER":
-        await query.edit_message_text(
-            "🧑‍💻 *User mode*\n\n"
-            "You can open paid links like this:\n"
-            "`https://t.me/TeleShortLinkBot?start=pl_TEST001`\n\n"
-            "In future we will show your unlocked links and purchase history here.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="BACK_MAIN")]]
-            ),
+    if data == "menu:how_it_works":
+        text = (
+            f"📘 *How {BRAND_NAME} works*\n\n"
+            "1️⃣ Creators go to the *Creator Panel* bot and generate a paid link.\n"
+            "2️⃣ They share that paid link with their audience.\n"
+            "3️⃣ Users open the link here, pay once, and get the *original unlocked URL*.\n"
+            "4️⃣ The creator earns money, and referrers can earn a small commission (coming soon).\n\n"
+            "_You are currently in TEST mode. In LIVE mode, all payments will be processed "
+            "via Cashfree and withdrawals will go directly to your bank._"
         )
+        await query.message.edit_text(text, parse_mode="Markdown")
         return
 
-    if data == "AS_CREATOR":
-        await query.edit_message_text(
-            "👨‍🎨 *Creator Panel*\n\n"
-            "This is the user bot. To *create* paid links and manage earnings,\n"
-            "please use the Creator Bot: @TeleShortLinkCreatorBot",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="BACK_MAIN")]]
-            ),
+    # Info about Cashfree test mode (for the fallback button)
+    if data == "info:cashfree_test":
+        text = (
+            "ℹ️ *Cashfree TEST mode*\n\n"
+            "Right now we are in sandbox/testing mode. To fully test the payment flow, "
+            "create a Cashfree Payment Link in your dashboard and paste that URL into "
+            "`TEST_CASHFREE_LINK_URL` in the bot code.\n\n"
+            "Then, when you tap the Pay button, it will open that test link."
         )
+        await query.message.edit_text(text, parse_mode="Markdown")
         return
 
-    if data == "HELP":
-        await query.edit_message_text(
-            "❓ *How TELE LINK works*\n\n"
-            "1️⃣ Creators generate paid links in the Creator Bot.\n"
-            "2️⃣ Users open those links here and pay via Cashfree.\n"
-            "3️⃣ After successful payment, users get access to the original URL.\n\n"
-            "This is *TEST* mode right now – no real money is charged.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="BACK_MAIN")]]
-            ),
+    # TEST payment confirmation → unlock link
+    if data.startswith("test_paid:"):
+        short_code = data.split(":", 1)[1]
+
+        if short_code != TEST_SHORT_CODE:
+            await query.message.edit_text("❌ Unknown or expired paid link.")
+            return
+
+        # Mark as unlocked (so we could later reuse this info)
+        UNLOCKED_USERS.add((user.id, short_code))
+
+        text = (
+            "✅ *TEST payment confirmed*\n\n"
+            "_In real LIVE mode, the bot will check your payment with Cashfree before unlocking._\n\n"
+            f"Here is your unlocked link:\n{TEST_LOCKED_URL}"
         )
+        await query.message.edit_text(text, parse_mode="Markdown", disable_web_page_preview=False)
         return
 
 
-# ============ MAIN ============
+# ================== MAIN ==================
+
 
 def main() -> None:
-    seed_test_link()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(handle_callback))
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(on_callback))
-
-    logger.info("User bot (TELE LINK) started with Cashfree TEST mode.")
-    application.run_polling()
+    logger.info("User bot (%s) started.", BRAND_NAME)
+    app.run_polling()
 
 
 if __name__ == "__main__":

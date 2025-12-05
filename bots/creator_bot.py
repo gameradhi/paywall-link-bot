@@ -51,10 +51,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ------------- UTIL -------------
+# ----------------- UTIL: MAIN MENU -----------------
 
-def main_menu_markup(title="Creator Dashboard"):
-    menu = [
+
+def build_main_menu(title: str = "Creator Dashboard"):
+    buttons = [
         [InlineKeyboardButton("🔗 Create Paid Link", callback_data="create")],
         [
             InlineKeyboardButton("💰 Wallet & Earnings", callback_data="earnings"),
@@ -64,22 +65,19 @@ def main_menu_markup(title="Creator Dashboard"):
         [InlineKeyboardButton("👥 Refer & Earn", callback_data="refer")],
         [InlineKeyboardButton("❓ Help", callback_data="creator_help")],
     ]
-    return title, InlineKeyboardMarkup(menu)
+    return title, InlineKeyboardMarkup(buttons)
 
 
-async def show_main_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    title: str = "Creator Dashboard",
-):
-    title, kb = main_menu_markup(title)
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str = "Creator Dashboard"):
+    title, kb = build_main_menu(title)
     if update.callback_query:
         await update.callback_query.edit_message_text(title, reply_markup=kb)
     else:
         await update.message.reply_text(title, reply_markup=kb)
 
 
-# ------------- /start & /menu -------------
+# ----------------- /start & /menu -----------------
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry: if already creator → dashboard, else login."""
@@ -101,7 +99,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hey 👋\n\n"
         "This is your *Creator Panel* for TeleShortLink.\n"
-        "Here you can create paid links and get instant unlock payments.\n\n"
+        "Here you can create paid links and earn when people unlock them.\n\n"
         "First, verify yourself by sharing your phone number.",
         parse_mode="Markdown",
         reply_markup=kb,
@@ -109,11 +107,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual /menu command, always jumps to dashboard."""
     await show_main_menu(update, context)
 
 
-# ------------- LOGIN FLOW -------------
+# ----------------- LOGIN FLOW -----------------
+
 
 async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact
@@ -131,7 +129,8 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ------------- TEXT HANDLER -------------
+# ----------------- TEXT HANDLER -----------------
+
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -224,8 +223,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        # Back to dashboard with button
-        title, kb = main_menu_markup("Creator Dashboard")
+        title, kb = build_main_menu("Creator Dashboard")
         await update.message.reply_text("Back to your dashboard 👇", reply_markup=kb)
         return
 
@@ -339,13 +337,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
 
-    # Default
+    # Default text
     await update.message.reply_text(
         "Use the buttons below or type /menu to open your dashboard 👇"
     )
 
 
-# ------------- BUTTON HANDLER -------------
+# ----------------- BUTTON HANDLER -----------------
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -609,7 +608,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ------------- MAIN -------------
+# ----------------- MAIN -----------------
+
 
 def main():
     init_db()
@@ -625,4 +625,4 @@ def main():
 
 
 if __name__ == "__main__":
- 
+    main()

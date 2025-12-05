@@ -5,11 +5,32 @@ from typing import Optional
 import random
 import string
 
+# Railway provides DATABASE_URL env
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+
+# ---------- HELPERS TO GENERATE CODES ----------
+
+def _generate_code(length: int = 8) -> str:
+    chars = string.ascii_uppercase + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
+
+def _generate_referral_code() -> str:
+    return _generate_code(6)
+
+
+def _generate_unique_referral(cur) -> str:
+    """Generate a unique referral code using given cursor."""
+    while True:
+        rcode = _generate_referral_code()
+        cur.execute("SELECT id FROM creators WHERE referral_code = %s;", (rcode,))
+        if cur.fetchone() is None:
+            return rcode
 
 
 # ---------- INIT DB ----------
@@ -19,7 +40,6 @@ def init_db():
     cur = conn.cursor()
 
     # ---- CREATORS ----
-    # base table (minimal, so old DB is OK)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS creators (
@@ -28,7 +48,6 @@ def init_db():
         );
         """
     )
-    # upgrade / add missing columns safely
     cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS username TEXT;")
     cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS full_name TEXT;")
     cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS phone TEXT;")
@@ -43,7 +62,7 @@ def init_db():
     cur.execute("ALTER TABLE creators ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();")
 
     # ---- LINKS ----
-    # keep column name creator_id (matches your existing DB)
+    # Note: using creator_id (matches previous schema)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS links (
@@ -66,7 +85,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             user_tg_id BIGINT,
             link_code TEXT,
-            amount INTEGER NOT NULL,           -- total user paid
+            amount INTEGER NOT NULL,
             creator_tg_id BIGINT,
             creator_amount INTEGER NOT NULL,
             platform_amount INTEGER NOT NULL,
@@ -87,9 +106,7 @@ def init_db():
         );
         """
     )
-    cur.execute(
-        "INSERT INTO platform_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;"
-    )
+    cur.execute("INSERT INTO platform_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
 
     # ---- WITHDRAWALS ----
     cur.execute(
@@ -98,11 +115,11 @@ def init_db():
             id SERIAL PRIMARY KEY,
             creator_tg_id BIGINT NOT NULL,
             amount INTEGER NOT NULL,
-            method_type TEXT,          -- 'upi' or 'bank'
+            method_type TEXT,
             upi_id TEXT,
             bank_account TEXT,
             bank_ifsc TEXT,
-            status TEXT DEFAULT 'pending',   -- 'pending','approved','rejected'
+            status TEXT DEFAULT 'pending',
             created_at TIMESTAMPTZ DEFAULT NOW(),
             processed_at TIMESTAMPTZ,
             processed_by BIGINT
@@ -113,17 +130,6 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-
-
-# ---------- HELPERS ----------
-
-def _generate_code(length: int = 8) -> str:
-    chars = string.ascii_uppercase + string.digits
-    return "".join(random.choice(chars) for _ in range(length))
-
-
-def _generate_referral_code() -> str:
-    return _generate_code(6)
 
 
 # ---------- CREATORS ----------
@@ -142,20 +148,12 @@ def upsert_creator(
     conn = get_conn()
     cur = conn.cursor()
 
-    # check if creator already exists
     cur.execute("SELECT * FROM creators WHERE tg_id = %s;", (tg_id,))
     existing = cur.fetchone()
 
     if existing is None:
-        # generate unique referral_code
-        while True:
-            rcode = _generate_referral_code()
-            cur.execute(
-                "SELECT id FROM creators WHERE referral_code = %s;", (rcode,)
-            )
-            if cur.fetchone() is None:
-                break
-
+        # new creator → always give referral code
+        rcode = _generate_unique_referral(cur)
         cur.execute(
             """
             INSERT INTO creators
@@ -165,16 +163,22 @@ def upsert_creator(
             (tg_id, username, full_name, phone, rcode, referred_by_code),
         )
     else:
+        # existing creator → if referral_code is NULL, generate one now
+        rcode = existing.get("referral_code")
+        if not rcode:
+            rcode = _generate_unique_referral(cur)
+
         cur.execute(
             """
             UPDATE creators SET
                 username = %s,
                 full_name = %s,
                 phone = %s,
-                referred_by_code = COALESCE(%s, referred_by_code)
+                referred_by_code = COALESCE(%s, referred_by_code),
+                referral_code = COALESCE(%s, referral_code)
             WHERE tg_id = %s;
             """,
-            (username, full_name, phone, referred_by_code, tg_id),
+            (username, full_name, phone, referred_by_code, rcode, tg_id),
         )
 
     conn.commit()
@@ -183,10 +187,24 @@ def upsert_creator(
 
 
 def get_creator_by_tg_id(tg_id: int):
+    """
+    Fetch creator. If old row has no referral_code, generate it now.
+    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM creators WHERE tg_id = %s;", (tg_id,))
     row = cur.fetchone()
+
+    if row and not row.get("referral_code"):
+        # self-healing for older creators
+        rcode = _generate_unique_referral(cur)
+        cur.execute(
+            "UPDATE creators SET referral_code = %s WHERE tg_id = %s;",
+            (rcode, tg_id),
+        )
+        conn.commit()
+        row["referral_code"] = rcode
+
     cur.close()
     conn.close()
     return row

@@ -30,6 +30,7 @@ from db import (
     upsert_creator,
     get_creator_wallet,
     get_creator_by_tg_id,
+    get_creator_by_referral_code,
     set_creator_payout_details,
     create_paid_link,
     get_links_for_creator,
@@ -42,6 +43,10 @@ BOT_TOKEN = "8280706073:AAED9i2p0TP42pPf9vMXoTt_HYGxqEuyy2w"
 # === MAIN BOT USERNAME (for share links) ===
 MAIN_BOT_USERNAME = "TeleShortLinkBot"
 
+# === FORCE JOIN CHANNEL ===
+FORCE_CHANNEL_ID = -1003472900442
+FORCE_CHANNEL_LINK = "https://t.me/TeleLinkUpdate"
+
 MIN_WITHDRAW = 100  # ₹100 min withdrawal
 
 logging.basicConfig(
@@ -51,10 +56,48 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ----------------- UTIL: FORCE JOIN -----------------
+
+
+async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Returns True if user is in channel OR check fails.
+    If not joined, sends join message and returns False.
+    """
+    user = update.effective_user
+    try:
+        member = await context.bot.get_chat_member(FORCE_CHANNEL_ID, user.id)
+        if member.status in ("member", "administrator", "creator"):
+            return True
+    except Exception as e:
+        # If something goes wrong with the check, don't block the user
+        logger.warning("Force-join check failed: %s", e)
+        return True
+
+    text = (
+        "🔔 To use the *TELE LINK Creator Panel*, please join our updates channel first.\n\n"
+        "After joining, tap *I Joined*."
+    )
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📢 Join TELE LINK Updates", url=FORCE_CHANNEL_LINK)],
+            [InlineKeyboardButton("✅ I Joined", callback_data="check_sub")],
+        ]
+    )
+
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=kb
+        )
+    return False
+
+
 # ----------------- UTIL: MAIN MENU -----------------
 
 
-def build_main_menu(title: str = "Creator Dashboard"):
+def build_main_menu(title: str = "TELE LINK Creator Dashboard"):
     buttons = [
         [InlineKeyboardButton("🔗 Create Paid Link", callback_data="create")],
         [
@@ -68,7 +111,7 @@ def build_main_menu(title: str = "Creator Dashboard"):
     return title, InlineKeyboardMarkup(buttons)
 
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str = "Creator Dashboard"):
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str = "TELE LINK Creator Dashboard"):
     title, kb = build_main_menu(title)
     if update.callback_query:
         await update.callback_query.edit_message_text(title, reply_markup=kb)
@@ -81,13 +124,16 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, tit
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry: if already creator → dashboard, else login."""
+    if not await ensure_force_join(update, context):
+        return
+
     user = update.effective_user
     creator = get_creator_by_tg_id(user.id)
 
     if creator:
         await update.message.reply_text(
             f"Hey {user.first_name or 'Creator'} 👋\n"
-            "Welcome back to your TeleShortLink Creator Panel."
+            "Welcome back to your TELE LINK Creator Panel."
         )
         await show_main_menu(update, context)
         return
@@ -98,8 +144,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Hey 👋\n\n"
-        "This is your *Creator Panel* for TeleShortLink.\n"
-        "Here you can create paid links and earn when people unlock them.\n\n"
+        "This is your *TELE LINK Creator Panel*.\n"
+        "Create paid links and earn money every time someone unlocks your content.\n\n"
         "First, verify yourself by sharing your phone number.",
         parse_mode="Markdown",
         reply_markup=kb,
@@ -107,6 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
     await show_main_menu(update, context)
 
 
@@ -114,6 +162,9 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
+
     contact = update.message.contact
     user = update.effective_user
 
@@ -133,6 +184,9 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
+
     user = update.effective_user
     msg = (update.message.text or "").strip()
 
@@ -141,10 +195,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1) Referral step on first login
     if login_state == "awaiting_referral":
-        if msg.lower() == "no":
-            ref_code = None
-        else:
+        ref_code = None
+        ref_info_text = None
+
+        if msg.lower() != "no":
             ref_code = msg
+            ref_creator = get_creator_by_referral_code(ref_code)
+            if ref_creator:
+                uname = ref_creator.get("username")
+                if uname:
+                    ref_info_text = f"🎉 You joined using referral code of @{uname}"
+                else:
+                    ref_info_text = "🎉 You joined using a creator's referral code."
 
         phone = context.user_data.get("phone", "")
 
@@ -158,9 +220,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["login_state"] = None
 
+        extra = f"\n\n{ref_info_text}" if ref_info_text else ""
         await update.message.reply_text(
-            "You’re now registered as a Creator 🎉\n\n"
-            "Let’s go to your dashboard.",
+            "You’re now registered as a TELE LINK Creator 🎉" + extra
         )
         await show_main_menu(update, context)
         return
@@ -223,7 +285,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        title, kb = build_main_menu("Creator Dashboard")
+        title, kb = build_main_menu("TELE LINK Creator Dashboard")
         await update.message.reply_text("Back to your dashboard 👇", reply_markup=kb)
         return
 
@@ -347,11 +409,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_force_join(update, context):
+        return
+
     query = update.callback_query
     data = query.data
     user = query.from_user
 
     await query.answer()
+
+    # Re-check after they pressed "I Joined"
+    if data == "check_sub":
+        if await ensure_force_join(update, context):
+            await query.message.reply_text(
+                "✅ Thanks for joining TELE LINK Updates!\nHere is your creator dashboard:",
+            )
+            await show_main_menu(update, context)
+        return
 
     # CREATE LINK
     if data == "create":
@@ -377,7 +451,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref = wallet["referral_earned"]
 
         text = (
-            "💰 *Your Wallet*\n\n"
+            "💰 *Your Wallet (TELE LINK)*\n\n"
             f"Available balance: ₹{bal}\n"
             f"Total earned: ₹{total}\n"
             f"From referrals: ₹{ref}\n\n"
@@ -468,10 +542,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_earned = wallet["referral_earned"]
 
         text = (
-            "👥 *Refer & Earn*\n\n"
-            "1. Share your referral code with friends.\n"
-            "2. They enter this code when they register as creators.\n"
-            "3. Whenever they earn, you get *5% extra* from platform share.\n\n"
+            "👥 *Refer & Earn (Money Focus)*\n\n"
+            "Invite other creators to TELE LINK.\n"
+            "Whenever *your referrals* earn from their links, you get *extra 5%* from our platform share.\n\n"
             f"Your referral code:\n`{rcode}`\n\n"
             f"Referral earnings till now: ₹{ref_earned}"
         )
@@ -547,82 +620,4 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
                 ),
             )
-            return
-
-        # choose method if both available
-        if upi and bank_acc and bank_ifsc:
-            buttons = [
-                [InlineKeyboardButton("Withdraw to UPI", callback_data="withdraw_upi")],
-                [InlineKeyboardButton("Withdraw to Bank", callback_data="withdraw_bank")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
-            ]
-            await query.edit_message_text(
-                f"Your balance: ₹{bal}\n\nChoose withdrawal method:",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-            return
-
-        # single method
-        if upi:
-            context.user_data["withdraw_method"] = "upi"
-        else:
-            context.user_data["withdraw_method"] = "bank"
-
-        context.user_data["state"] = "awaiting_withdraw_amount"
-        await query.edit_message_text(
-            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # WITHDRAW UPI / BANK (choice)
-    if data == "withdraw_upi":
-        wallet = get_creator_wallet(user.id)
-        bal = wallet["wallet_balance"] if wallet else 0
-
-        context.user_data["withdraw_method"] = "upi"
-        context.user_data["state"] = "awaiting_withdraw_amount"
-
-        await query.edit_message_text(
-            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
-            parse_mode="Markdown",
-        )
-        return
-
-    if data == "withdraw_bank":
-        wallet = get_creator_wallet(user.id)
-        bal = wallet["wallet_balance"] if wallet else 0
-
-        context.user_data["withdraw_method"] = "bank"
-        context.user_data["state"] = "awaiting_withdraw_amount"
-
-        await query.edit_message_text(
-            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # BACK TO MENU
-    if data == "back_menu":
-        await show_main_menu(update, context)
-        return
-
-
-# ----------------- MAIN -----------------
-
-
-def main():
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu_cmd))
-    app.add_handler(MessageHandler(filters.CONTACT, save_contact))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+      

@@ -51,15 +51,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ------------- /start -------------
+# ------------- UTIL -------------
+
+def main_menu_markup(title="Creator Dashboard"):
+    menu = [
+        [InlineKeyboardButton("🔗 Create Paid Link", callback_data="create")],
+        [
+            InlineKeyboardButton("💰 Wallet & Earnings", callback_data="earnings"),
+            InlineKeyboardButton("📊 My Links", callback_data="stats"),
+        ],
+        [InlineKeyboardButton("🏦 Bank / UPI", callback_data="bank")],
+        [InlineKeyboardButton("👥 Refer & Earn", callback_data="refer")],
+        [InlineKeyboardButton("❓ Help", callback_data="creator_help")],
+    ]
+    return title, InlineKeyboardMarkup(menu)
+
+
+async def show_main_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    title: str = "Creator Dashboard",
+):
+    title, kb = main_menu_markup(title)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(title, reply_markup=kb)
+    else:
+        await update.message.reply_text(title, reply_markup=kb)
+
+
+# ------------- /start & /menu -------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry: if already creator → dashboard, else login."""
     user = update.effective_user
     creator = get_creator_by_tg_id(user.id)
 
-    # If already registered, go directly to menu
     if creator:
-        await show_main_menu(update, context, "Welcome back Creator 👋")
+        await update.message.reply_text(
+            f"Hey {user.first_name or 'Creator'} 👋\n"
+            "Welcome back to your TeleShortLink Creator Panel."
+        )
+        await show_main_menu(update, context)
         return
 
     # Ask for phone to register
@@ -67,9 +99,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = ReplyKeyboardMarkup([[btn]], resize_keyboard=True, one_time_keyboard=True)
 
     await update.message.reply_text(
-        "Welcome Creator 👋\n\nPlease verify login by sharing your phone number.",
+        "Hey 👋\n\n"
+        "This is your *Creator Panel* for TeleShortLink.\n"
+        "Here you can create paid links and get instant unlock payments.\n\n"
+        "First, verify yourself by sharing your phone number.",
+        parse_mode="Markdown",
         reply_markup=kb,
     )
+
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual /menu command, always jumps to dashboard."""
+    await show_main_menu(update, context)
 
 
 # ------------- LOGIN FLOW -------------
@@ -82,7 +123,10 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["login_state"] = "awaiting_referral"
 
     await update.message.reply_text(
-        "Number verified ✅\n\nDo you have referral code?\n• Send it now\n• Or type 'no'",
+        "Number verified ✅\n\n"
+        "If any creator referred you, send their *referral code* now.\n"
+        "If not, simply type `no`.",
+        parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -115,7 +159,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["login_state"] = None
 
-        await show_main_menu(update, context, "You’re now logged in 🎉")
+        await update.message.reply_text(
+            "You’re now registered as a Creator 🎉\n\n"
+            "Let’s go to your dashboard.",
+        )
+        await show_main_menu(update, context)
         return
 
     # 2) Create link: waiting for URL
@@ -170,13 +218,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "✅ *Paid Link Created!*\n\n"
-            f"Original URL:\n{original_url}\n\n"
-            f"Price: ₹{price}\n\n"
-            f"Share this link to earn:\n`{short_link}`",
+            f"🔗 Original URL:\n{original_url}\n\n"
+            f"💰 Price per unlock: ₹{price}\n\n"
+            f"Share this link to start earning:\n`{short_link}`",
             parse_mode="Markdown",
         )
 
-        await show_main_menu(update, context, "Back to Creator Menu:")
+        # Back to dashboard with button
+        title, kb = main_menu_markup("Creator Dashboard")
+        await update.message.reply_text("Back to your dashboard 👇", reply_markup=kb)
         return
 
     # 4) Bank / UPI: waiting for UPI ID
@@ -193,7 +243,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ UPI ID saved:\n`{upi_id}`",
             parse_mode="Markdown",
         )
-        await show_main_menu(update, context, "Back to Creator Menu:")
+        await show_main_menu(update, context)
         return
 
     # 5) Bank details: waiting for account number
@@ -223,7 +273,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Bank details saved.",
         )
-        await show_main_menu(update, context, "Back to Creator Menu:")
+        await show_main_menu(update, context)
         return
 
     # 7) Withdrawal: waiting for amount
@@ -283,38 +333,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "✅ Withdrawal request created.\n\n"
-            "Your balance is reduced now. Admin will send payout manually to your UPI/Bank soon."
+            "Your balance is reduced now. Admin will send payout to your UPI/Bank.\n"
+            "Later this will be *automatic* when payout API is connected."
         )
-        await show_main_menu(update, context, "Back to Creator Menu:")
+        await show_main_menu(update, context)
         return
 
     # Default
-    await update.message.reply_text("Use the buttons below 👇")
-
-
-# ------------- MENU -------------
-
-async def show_main_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    title: str = "Creator Menu",
-):
-    menu = [
-        [InlineKeyboardButton("🔗 Create Paid Link", callback_data="create")],
-        [
-            InlineKeyboardButton("💰 Earnings", callback_data="earnings"),
-            InlineKeyboardButton("📊 Link Stats", callback_data="stats"),
-        ],
-        [InlineKeyboardButton("🏦 Bank / UPI", callback_data="bank")],
-        [InlineKeyboardButton("👥 Refer & Earn", callback_data="refer")],
-        [InlineKeyboardButton("❓ Help", callback_data="creator_help")],
-    ]
-    kb = InlineKeyboardMarkup(menu)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text(title, reply_markup=kb)
-    else:
-        await update.message.reply_text(title, reply_markup=kb)
+    await update.message.reply_text(
+        "Use the buttons below or type /menu to open your dashboard 👇"
+    )
 
 
 # ------------- BUTTON HANDLER -------------
@@ -350,14 +378,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref = wallet["referral_earned"]
 
         text = (
-            "💰 *Your Earnings*\n\n"
+            "💰 *Your Wallet*\n\n"
             f"Available balance: ₹{bal}\n"
             f"Total earned: ₹{total}\n"
             f"From referrals: ₹{ref}\n\n"
             f"Minimum withdrawal: ₹{MIN_WITHDRAW}"
         )
 
-        buttons = [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+        buttons = [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
         if bal >= MIN_WITHDRAW:
             buttons.insert(0, [InlineKeyboardButton("📤 Withdraw", callback_data="withdraw")])
 
@@ -375,7 +403,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 "📊 You have no links yet.",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
                 ),
             )
             return
@@ -394,7 +422,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+                [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
             ),
         )
         return
@@ -417,7 +445,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton("Set UPI ID", callback_data="set_upi")],
             [InlineKeyboardButton("Set Bank Details", callback_data="set_bank")],
-            [InlineKeyboardButton("⬅ Back", callback_data="back_menu")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
         ]
 
         await query.edit_message_text(
@@ -430,26 +458,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # REFER & EARN
     if data == "refer":
         creator = get_creator_by_tg_id(user.id)
-        if not creator:
+        wallet = get_creator_wallet(user.id)
+        if not creator or not wallet:
             await query.edit_message_text(
                 "You are not registered as a creator.\nSend /start again."
             )
             return
 
         rcode = creator["referral_code"]
+        ref_earned = wallet["referral_earned"]
+
         text = (
             "👥 *Refer & Earn*\n\n"
-            "Share your referral code with friends.\n"
-            "If they register as creators using this code, "
-            "you get 5% from their earnings (from platform share).\n\n"
-            f"Your referral code:\n`{rcode}`"
+            "1. Share your referral code with friends.\n"
+            "2. They enter this code when they register as creators.\n"
+            "3. Whenever they earn, you get *5% extra* from platform share.\n\n"
+            f"Your referral code:\n`{rcode}`\n\n"
+            f"Referral earnings till now: ₹{ref_earned}"
         )
 
         await query.edit_message_text(
             text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+                [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
             ),
         )
         return
@@ -458,10 +490,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "creator_help":
         await query.edit_message_text(
             "❓ *Help*\n\n"
-            "For support, message the admin:\n@TeleShortLinkAdminBot",
+            "For support or questions, message the admin:\n@TeleShortLinkAdminBot",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+                [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
             ),
         )
         return
@@ -502,7 +534,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 f"You need at least ₹{MIN_WITHDRAW} to withdraw.",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
                 ),
             )
             return
@@ -513,7 +545,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Please set UPI or bank details first in *Bank / UPI* menu.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("⬅ Back", callback_data="back_menu")]]
+                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
                 ),
             )
             return
@@ -523,7 +555,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons = [
                 [InlineKeyboardButton("Withdraw to UPI", callback_data="withdraw_upi")],
                 [InlineKeyboardButton("Withdraw to Bank", callback_data="withdraw_bank")],
-                [InlineKeyboardButton("⬅ Back", callback_data="back_menu")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
             ]
             await query.edit_message_text(
                 f"Your balance: ₹{bal}\n\nChoose withdrawal method:",
@@ -573,7 +605,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # BACK TO MENU
     if data == "back_menu":
-        await show_main_menu(update, context, "Creator Menu")
+        await show_main_menu(update, context)
         return
 
 
@@ -584,6 +616,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(MessageHandler(filters.CONTACT, save_contact))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -592,4 +625,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+ 

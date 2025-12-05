@@ -38,7 +38,7 @@ TEST_LOCKED_URL = "https://example.com/your-secret-link"
 # 👉 IMPORTANT:
 # Paste your real Cashfree *TEST* payment link URL here
 # (the one that opens the “Payment Success ₹20” screen you showed).
-TEST_CASHFREE_LINK_URL = "https://payments-test.cashfree.com/links/YOUR_TEST_LINK_ID"
+TEST_CASHFREE_LINK_URL = "https://payments-test.cashfree.com/links?code=l9j83m2sug2g_AAAAAACmTjU"
 
 # In-memory record of who has already unlocked which short_code (TEST only)
 UNLOCKED_USERS: Set[Tuple[int, str]] = set()

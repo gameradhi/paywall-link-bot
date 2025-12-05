@@ -3,7 +3,6 @@
 # Bot: @TeleShortLinkBot
 
 import logging
-import os
 import uuid
 from datetime import datetime
 
@@ -43,25 +42,22 @@ CF_SECRET = "cfsk_ma_test_7c3535ef3e930f31810a450c342308b4_d6795ca8"
 CF_API_VERSION = "2022-09-01"
 CF_CURRENCY = "INR"
 
-# NOTE:
-# Later when LIVE is enabled you will change ONLY:
-# CF_BASE_URL  -> "https://api.cashfree.com/pg"
-# CF_APP_ID    -> LIVE APP ID
-# CF_SECRET    -> LIVE SECRET
+# NOTE for LIVE later:
+# CF_BASE_URL = "https://api.cashfree.com/pg"
+# CF_APP_ID   = "<LIVE APP ID>"
+# CF_SECRET   = "<LIVE SECRET>"
 
 
-# ============ SIMPLE IN-MEMORY STORAGE (for TEST only) ============
+# ============ SIMPLE IN-MEMORY STORAGE (TEST ONLY) ============
 
-# For now we keep link + order data in memory.
-# When we move to production we will connect it to db.py.
-PAID_LINKS = {}   # short_code -> dict(original_url, price, creator_id)
+PAID_LINKS = {}      # short_code -> dict(original_url, price, creator_id)
 PENDING_ORDERS = {}  # order_id -> dict(user_id, short_code, amount)
 
 
 def seed_test_link():
     """
     Create one test paid link in memory so you can test the full payment flow.
-    Later, this will be replaced with real DB-based links created from Creator Bot.
+    Later this will be replaced with DB links from Creator Bot.
     """
     short_code = "TEST001"
     PAID_LINKS[short_code] = {
@@ -80,7 +76,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============ HELPER: FORCE JOIN CHECK ============
+# ============ FORCE JOIN CHECK ============
 
 async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
@@ -103,19 +99,18 @@ async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [
             [
                 InlineKeyboardButton(
-                    "📢 Join Update Channel",
+                    "📢 Join TELE LINK Updates",
                     url=f"https://t.me/{FORCE_CHANNEL_USERNAME}",
                 )
             ],
-            [InlineKeyboardButton("✅ I have joined", callback_data="check_join")],
+            [InlineKeyboardButton("✅ I Joined", callback_data="check_join")],
         ]
     )
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            f"👋 Hey {user.first_name}!\n\n"
-            f"To use *{BRAND_NAME}* you must join our update channel first.\n\n"
-            "Tap the button below to join, then click *I have joined*."
+            f"After joining, tap *I Joined*.\n\n"
+            f"To use *{BRAND_NAME}* you must join our update channel first."
         ),
         reply_markup=keyboard,
         parse_mode="Markdown",
@@ -127,28 +122,29 @@ async def check_join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Re-run force join check
-    fake_update = Update(
-        update.update_id,
-        message=None,
-    )
-    fake_update._effective_user = query.from_user
-    fake_update._effective_chat = query.message.chat
+    try:
+        member = await context.bot.get_chat_member(FORCE_CHANNEL_ID, query.from_user.id)
+        if member.status in ("member", "creator", "administrator"):
+            await show_main_menu(query, context)
+            return
+    except Exception as e:
+        logger.warning("Force join re-check failed: %s", e)
+        await show_main_menu(query, context)
+        return
 
-    if await ensure_force_join(fake_update, context):
-        await show_main_menu(query, context, fresh=True)
-    else:
-        # still not joined
-        await query.edit_message_text(
-            "❌ You have not joined the channel yet. Please join and try again."
-        )
+    await query.edit_message_text(
+        "❌ You have not joined the channel yet. Please join and try again."
+    )
 
 
 # ============ CASHFREE HELPERS ============
 
 def create_cashfree_order(user_id: int, amount: float, description: str):
     """
-    Creates an order in Cashfree (TEST) and returns (payment_link, order_id) or (None, None).
+    Creates an order in Cashfree (TEST).
+    Returns: (payment_link, order_id, error_text)
+    If success: payment_link + order_id, error_text=None
+    If fail: payment_link=None, order_id=None, error_text contains reason
     """
     order_id = f"TL_{user_id}_{uuid.uuid4().hex[:8]}"
 
@@ -156,7 +152,7 @@ def create_cashfree_order(user_id: int, amount: float, description: str):
         "order_id": order_id,
         "order_amount": float(amount),
         "order_currency": CF_CURRENCY,
-        "order_note": description,
+        "order_note": description[:60],
         "customer_details": {
             "customer_id": str(user_id),
             "customer_phone": "9999999999",
@@ -172,22 +168,27 @@ def create_cashfree_order(user_id: int, amount: float, description: str):
     }
 
     try:
-        resp = requests.post(
-            f"{CF_BASE_URL}/orders",
-            json=payload,
-            headers=headers,
-            timeout=15,
-        )
-        data = resp.json()
-        logger.info("Cashfree create order resp: %s", data)
+        url = f"{CF_BASE_URL}/orders"
+        logger.info("Creating Cashfree order at %s with payload %s", url, payload)
+        resp = requests.post(url, json=payload, headers=headers, timeout=20)
+        text = resp.text
+        logger.info("Cashfree response [%s]: %s", resp.status_code, text)
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
 
         if resp.status_code == 200 and data.get("order_status") == "ACTIVE":
-            return data.get("payment_link"), order_id
+            return data.get("payment_link"), order_id, None
 
-        return None, None
+        # some error from Cashfree
+        err_msg = f"{resp.status_code}: {text[:200]}"
+        return None, None, err_msg
+
     except Exception as e:
         logger.error("Cashfree exception: %s", e)
-        return None, None
+        return None, None, str(e)
 
 
 # ============ UI BUILDERS ============
@@ -221,10 +222,10 @@ def user_home_keyboard() -> InlineKeyboardMarkup:
 # ============ HANDLERS ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start and also deep-links for paid links."""
+    """Handle /start and deep-links for paid links."""
     user = update.effective_user
 
-    # Seed one test link the first time /start is called
+    # Seed one test link first time
     if not PAID_LINKS:
         seed_test_link()
 
@@ -233,18 +234,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args or []
 
-    # Deep-link for paid link: /start pl_CODE
+    # Deep-link: /start pl_CODE
     if args and args[0].startswith("pl_"):
         short_code = args[0][3:]
         await show_paid_link_screen(update, context, short_code)
         return
 
-    # Normal start
     greeting = (
         f"Hey {user.first_name} 👋\n\n"
         f"Welcome to *{BRAND_NAME}*.\n\n"
-        "🔗 Lock any link behind a paywall and get paid when people unlock it.\n"
-        "💰 Users pay in INR, you earn, we take a small commission.\n\n"
+        "• Creators can lock any link behind a small payment.\n"
+        "• Users pay once to unlock and access the content.\n\n"
         "Choose how you want to continue:"
     )
     if update.message:
@@ -257,21 +257,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def show_main_menu(update_or_query, context: ContextTypes.DEFAULT_TYPE, fresh=False):
-    user = update_or_query.from_user if hasattr(update_or_query, "from_user") else update_or_query.effective_user
+async def show_main_menu(update_or_query, context: ContextTypes.DEFAULT_TYPE):
+    user = (
+        update_or_query.from_user
+        if hasattr(update_or_query, "from_user")
+        else update_or_query.effective_user
+    )
     text = (
         f"Hey {user.first_name} 👋\n\n"
         f"Welcome back to *{BRAND_NAME}*.\n"
         "Choose how you want to continue:"
     )
-    if isinstance(update_or_query, Update) and update_or_query.message and fresh:
-        await update_or_query.message.reply_text(
-            text, reply_markup=main_menu_keyboard(), parse_mode="Markdown"
-        )
-    else:
-        await update_or_query.edit_message_text(
-            text, reply_markup=main_menu_keyboard(), parse_mode="Markdown"
-        )
+    await update_or_query.edit_message_text(
+        text, reply_markup=main_menu_keyboard(), parse_mode="Markdown"
+    )
 
 
 async def as_user_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -281,7 +280,7 @@ async def as_user_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🙋 *User Mode*\n\n"
         "You can unlock paid links created by TELE LINK creators.\n\n"
-        "Right now this is a TEST setup.\n\n"
+        "Right now this is a TEST setup.\n"
         "Use any paid link you receive (starting with `/start pl_...`) and "
         "you will see the paywall with Cashfree TEST payment."
     )
@@ -298,7 +297,7 @@ async def as_creator_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🧑‍💻 *Creator Mode*\n\n"
         "To create paid links, please go to our Creator Bot:\n\n"
         "👉 @TeleShortLinkCreatorBot\n\n"
-        "There you can set price, get your unique link and share it.\n\n"
+        "There you can set price, get your unique link and share it.\n"
         "Users will unlock it here in this bot."
     )
     keyboard = InlineKeyboardMarkup(
@@ -345,8 +344,6 @@ async def nop_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_paid_link_screen(update: Update, context: ContextTypes.DEFAULT_TYPE, short_code: str):
     """Show the paywall for a given short_code."""
-    user = update.effective_user
-
     if not await ensure_force_join(update, context):
         return
 
@@ -364,7 +361,7 @@ async def show_paid_link_screen(update: Update, context: ContextTypes.DEFAULT_TY
         f"🔒 *Paid Link*\n\n"
         f"Creator has locked this content.\n"
         f"To unlock, pay *{CURRENCY_SYMBOL}{price}*.\n\n"
-        "You are currently in *TEST MODE* with Cashfree sandbox.\n"
+        "⚠️ You are currently in *TEST MODE* with Cashfree sandbox.\n"
         "No real money will be taken."
     )
 
@@ -391,7 +388,7 @@ async def show_paid_link_screen(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def cfpay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User clicked Pay with Cashfree (TEST)"""
+    """User clicked Pay with Cashfree (TEST)."""
     query = update.callback_query
     await query.answer()
 
@@ -405,16 +402,19 @@ async def cfpay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("⏳ Creating Cashfree TEST order…")
 
-    payment_link, order_id = create_cashfree_order(
+    payment_link, order_id, err = create_cashfree_order(
         query.from_user.id,
         amount,
         f"Paid link {short_code}",
     )
 
     if not payment_link:
+        err_text = err or "Unknown error"
         await query.edit_message_text(
-            "❌ Failed to create Cashfree TEST payment link.\n"
-            "Please try again later."
+            "❌ Failed to create Cashfree TEST payment link.\n\n"
+            f"Error from Cashfree:\n`{err_text}`\n\n"
+            "If this keeps happening, please send this message to admin.",
+            parse_mode="Markdown",
         )
         return
 
@@ -468,8 +468,6 @@ async def cfpaid_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Paid link not found anymore.")
         return
 
-    # In production we will verify with Cashfree's /orders/{order_id} API.
-    # Here we trust the user (TEST mode).
     original_url = link["original_url"]
 
     text = (

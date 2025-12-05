@@ -47,7 +47,8 @@ MAIN_BOT_USERNAME = "TeleShortLinkBot"
 FORCE_CHANNEL_ID = -1003472900442
 FORCE_CHANNEL_LINK = "https://t.me/TeleLinkUpdate"
 
-MIN_WITHDRAW = 100  # ₹100 min withdrawal
+# === MINIMUM WITHDRAWAL ===
+MIN_WITHDRAW = 100  # ₹100
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -56,21 +57,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ----------------- UTIL: FORCE JOIN -----------------
+# ----------------- FORCE JOIN -----------------
 
 
 async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
-    Returns True if user is in channel OR check fails.
+    Returns True if user is in channel (or check fails).
     If not joined, sends join message and returns False.
     """
     user = update.effective_user
+
     try:
         member = await context.bot.get_chat_member(FORCE_CHANNEL_ID, user.id)
         if member.status in ("member", "administrator", "creator"):
             return True
     except Exception as e:
-        # If something goes wrong with the check, don't block the user
+        # If something breaks (e.g. bot not admin), don't block user
         logger.warning("Force-join check failed: %s", e)
         return True
 
@@ -94,7 +96,7 @@ async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return False
 
 
-# ----------------- UTIL: MAIN MENU -----------------
+# ----------------- MAIN MENU -----------------
 
 
 def build_main_menu(title: str = "TELE LINK Creator Dashboard"):
@@ -111,7 +113,11 @@ def build_main_menu(title: str = "TELE LINK Creator Dashboard"):
     return title, InlineKeyboardMarkup(buttons)
 
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str = "TELE LINK Creator Dashboard"):
+async def show_main_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    title: str = "TELE LINK Creator Dashboard",
+):
     title, kb = build_main_menu(title)
     if update.callback_query:
         await update.callback_query.edit_message_text(title, reply_markup=kb)
@@ -123,7 +129,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, tit
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry: if already creator → dashboard, else login."""
     if not await ensure_force_join(update, context):
         return
 
@@ -138,7 +143,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
 
-    # Ask for phone to register
     btn = KeyboardButton(text="📲 Share Phone Number", request_contact=True)
     kb = ReplyKeyboardMarkup([[btn]], resize_keyboard=True, one_time_keyboard=True)
 
@@ -166,8 +170,6 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     contact = update.message.contact
-    user = update.effective_user
-
     context.user_data["phone"] = contact.phone_number
     context.user_data["login_state"] = "awaiting_referral"
 
@@ -193,7 +195,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     login_state = context.user_data.get("login_state")
     flow_state = context.user_data.get("state")
 
-    # 1) Referral step on first login
+    # ---------- 1) Referral step on first login ----------
     if login_state == "awaiting_referral":
         ref_code = None
         ref_info_text = None
@@ -227,7 +229,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
 
-    # 2) Create link: waiting for URL
+    # ---------- 2) Create link: waiting for URL ----------
     if flow_state == "awaiting_url":
         if not (msg.startswith("http://") or msg.startswith("https://")):
             await update.message.reply_text(
@@ -245,7 +247,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 3) Create link: waiting for price
+    # ---------- 3) Create link: waiting for price ----------
     if flow_state == "awaiting_price":
         if not msg.isdigit():
             await update.message.reply_text(
@@ -289,7 +291,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Back to your dashboard 👇", reply_markup=kb)
         return
 
-    # 4) Bank / UPI: waiting for UPI ID
+    # ---------- 4) Bank / UPI: waiting for UPI ID ----------
     if flow_state == "awaiting_upi":
         upi_id = msg
         set_creator_payout_details(
@@ -306,7 +308,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
 
-    # 5) Bank details: waiting for account number
+    # ---------- 5) Bank details: waiting for account ----------
     if flow_state == "awaiting_bank_acc":
         context.user_data["bank_account"] = msg
         context.user_data["state"] = "awaiting_bank_ifsc"
@@ -316,7 +318,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 6) Bank details: waiting for IFSC
+    # ---------- 6) Bank details: waiting for IFSC ----------
     if flow_state == "awaiting_bank_ifsc":
         bank_account = context.user_data.get("bank_account")
         bank_ifsc = msg
@@ -330,13 +332,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = None
         context.user_data.pop("bank_account", None)
 
-        await update.message.reply_text(
-            "✅ Bank details saved.",
-        )
+        await update.message.reply_text("✅ Bank details saved.")
         await show_main_menu(update, context)
         return
 
-    # 7) Withdrawal: waiting for amount
+    # ---------- 7) Withdrawal: waiting for amount ----------
     if flow_state == "awaiting_withdraw_amount":
         if not msg.isdigit():
             await update.message.reply_text(
@@ -399,7 +399,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
 
-    # Default text
+    # ---------- Default ----------
     await update.message.reply_text(
         "Use the buttons below or type /menu to open your dashboard 👇"
     )
@@ -418,7 +418,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
-    # Re-check after they pressed "I Joined"
+    # Check after "I Joined"
     if data == "check_sub":
         if await ensure_force_join(update, context):
             await query.message.reply_text(
@@ -469,7 +469,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # LINK STATS
+    # STATS
     if data == "stats":
         links = get_links_for_creator(user.id)
         if not links:
@@ -482,7 +482,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         lines = ["📊 *Your Recent Links:*", ""]
-        for link in links[:5]:  # show last 5
+        for link in links[:5]:
             lines.append(
                 f"Code: `{link['code']}`\n"
                 f"Price: ₹{link['price']}\n"
@@ -592,9 +592,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "withdraw":
         wallet = get_creator_wallet(user.id)
         if not wallet:
-            await query.edit_message_text(
-                "You are not registered as a creator."
-            )
+            await query.edit_message_text("You are not registered as a creator.")
             return
 
         bal = wallet["wallet_balance"]
@@ -620,9 +618,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
                 ),
             )
-      return
+            return
 
-        # choose method if both available
+        # both methods available → choose
         if upi and bank_acc and bank_ifsc:
             buttons = [
                 [InlineKeyboardButton("Withdraw to UPI", callback_data="withdraw_upi")],
@@ -635,7 +633,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # single method
+        # only one method
         if upi:
             context.user_data["withdraw_method"] = "upi"
         else:
@@ -648,7 +646,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # WITHDRAW UPI / BANK (choice)
+    # WITHDRAW via UPI
     if data == "withdraw_upi":
         wallet = get_creator_wallet(user.id)
         bal = wallet["wallet_balance"] if wallet else 0
@@ -662,6 +660,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # WITHDRAW via BANK
     if data == "withdraw_bank":
         wallet = get_creator_wallet(user.id)
         bal = wallet["wallet_balance"] if wallet else 0

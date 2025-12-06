@@ -1,698 +1,645 @@
-import logging
-import os
-import sys
+# bots/creator_bot.py
+# Creator Bot: @TeleShortLinkCreatorBot
+# Handles: creator dashboard, create paid links, wallet, withdrawals (with payout API)
 
-# Make sure Python can import db.py (parent folder)
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(CURRENT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.append(PARENT_DIR)
+import logging
+import uuid
+from typing import Dict, Any
 
 from telegram import (
     Update,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
     filters,
 )
 
 from db import (
-    init_db,
-    upsert_creator,
-    get_creator_wallet,
-    get_creator_by_tg_id,
-    get_creator_by_referral_code,
-    set_creator_payout_details,
-    create_paid_link,
-    get_links_for_creator,
-    create_withdrawal_request,
+    get_or_create_user,
+    set_user_role,
+    get_creator_stats,
+    get_wallet,
+    create_link,
+    get_creator_links,
+    create_withdrawal,
+    get_user_withdrawals,
+    set_withdrawal_status,
 )
 
-# === CREATOR BOT TOKEN ===
+from bots.payouts import send_payout
+
+# ================== CONFIG ==================
+
 BOT_TOKEN = "8280706073:AAED9i2p0TP42pPf9vMXoTt_HYGxqEuyy2w"
 
-# === MAIN BOT USERNAME (for share links) ===
+BRAND_NAME = "Tele Link"
 MAIN_BOT_USERNAME = "TeleShortLinkBot"
 
-# === FORCE JOIN CHANNEL ===
-FORCE_CHANNEL_ID = -1003472900442
-FORCE_CHANNEL_LINK = "https://t.me/TeleLinkUpdate"
+PLATFORM_COMMISSION_PERCENT = 10.0  # 10% commission for Tele Link
+MIN_WITHDRAWAL = 100.0
 
-# === MINIMUM WITHDRAWAL ===
-MIN_WITHDRAW = 100  # ₹100
+# Force-join channel
+FORCE_CHANNEL_ID = -1003472900442
+FORCE_CHANNEL_USERNAME = "TeleLinkUpdate"
+
+# Owner/admin (for payout notifications)
+OWNER_TG_ID = 8545081401
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - CREATOR_BOT - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
 
-# ----------------- FORCE JOIN -----------------
-
+# ================== FORCE JOIN ==================
 
 async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
-    Returns True if user is in channel (or check fails).
-    If not joined, sends join message and returns False.
+    Ensures user is a member of the updates channel.
+    Returns True if OK, False if we showed join prompt.
     """
     user = update.effective_user
+    chat_id = update.effective_chat.id
+    bot = context.bot
 
     try:
-        member = await context.bot.get_chat_member(FORCE_CHANNEL_ID, user.id)
+        member = await bot.get_chat_member(FORCE_CHANNEL_ID, user.id)
         if member.status in ("member", "administrator", "creator"):
             return True
-    except Exception as e:
-        # If something breaks (e.g. bot not admin), don't block user
-        logger.warning("Force-join check failed: %s", e)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Force join check failed: %s", e)
+        # If check fails due to any reason, fail-open (allow usage)
         return True
 
-    text = (
-        "🔔 To use the *TELE LINK Creator Panel*, please join our updates channel first.\n\n"
-        "After joining, tap *I Joined*."
-    )
-    kb = InlineKeyboardMarkup(
+    keyboard = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📢 Join TELE LINK Updates", url=FORCE_CHANNEL_LINK)],
-            [InlineKeyboardButton("✅ I Joined", callback_data="check_sub")],
+            [
+                InlineKeyboardButton(
+                    "📢 Join Tele Link Updates",
+                    url=f"https://t.me/{FORCE_CHANNEL_USERNAME}",
+                )
+            ],
+            [InlineKeyboardButton("✅ I Joined", callback_data="joined_channel")],
         ]
     )
 
-    if update.message:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(
-            text, parse_mode="Markdown", reply_markup=kb
-        )
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "📢 *Join Tele Link Updates*\n\n"
+            "To use the creator panel, you must join our updates channel.\n\n"
+            "After joining, tap *I Joined* below."
+        ),
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
     return False
 
 
-# ----------------- MAIN MENU -----------------
+# ================== UI HELPERS ==================
 
-
-def build_main_menu(title: str = "TELE LINK Creator Dashboard"):
-    buttons = [
-        [InlineKeyboardButton("🔗 Create Paid Link", callback_data="create")],
+def creator_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("💰 Wallet & Earnings", callback_data="earnings"),
-            InlineKeyboardButton("📊 My Links", callback_data="stats"),
-        ],
-        [InlineKeyboardButton("🏦 Bank / UPI", callback_data="bank")],
-        [InlineKeyboardButton("👥 Refer & Earn", callback_data="refer")],
-        [InlineKeyboardButton("❓ Help", callback_data="creator_help")],
-    ]
-    return title, InlineKeyboardMarkup(buttons)
+            [
+                InlineKeyboardButton("💰 Wallet & Withdraw", callback_data="menu_wallet"),
+                InlineKeyboardButton("🔗 Create Paid Link", callback_data="menu_create_link"),
+            ],
+            [
+                InlineKeyboardButton("📎 My Links", callback_data="menu_my_links"),
+                InlineKeyboardButton("📊 Earnings Report", callback_data="menu_stats"),
+            ],
+            [
+                InlineKeyboardButton("🧾 Withdrawal History", callback_data="menu_withdraw_history"),
+            ],
+            [
+                InlineKeyboardButton(f"⬅ Back to @{MAIN_BOT_USERNAME}", url=f"https://t.me/{MAIN_BOT_USERNAME}"),
+            ],
+        ]
+    )
 
 
-async def show_main_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    title: str = "TELE LINK Creator Dashboard",
-):
-    title, kb = build_main_menu(title)
-    if update.callback_query:
-        await update.callback_query.edit_message_text(title, reply_markup=kb)
-    else:
-        await update.message.reply_text(title, reply_markup=kb)
-
-
-# ----------------- /start & /menu -----------------
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_force_join(update, context):
-        return
-
+async def send_creator_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    creator = get_creator_by_tg_id(user.id)
+    chat_id = update.effective_chat.id
 
-    if creator:
-        await update.message.reply_text(
-            f"Hey {user.first_name or 'Creator'} 👋\n"
-            "Welcome back to your TELE LINK Creator Panel."
-        )
-        await show_main_menu(update, context)
-        return
+    # ensure user exists & set role to creator
+    db_user = get_or_create_user(user.id, user.username, role="creator")
+    if db_user.get("role") != "creator":
+        set_user_role(user.id, "creator")
 
-    btn = KeyboardButton(text="📲 Share Phone Number", request_contact=True)
-    kb = ReplyKeyboardMarkup([[btn]], resize_keyboard=True, one_time_keyboard=True)
+    stats = get_creator_stats(user.id)
+    wallet = get_wallet(user.id)
 
-    await update.message.reply_text(
-        "Hey 👋\n\n"
-        "This is your *TELE LINK Creator Panel*.\n"
-        "Create paid links and earn money every time someone unlocks your content.\n\n"
-        "First, verify yourself by sharing your phone number.",
+    text = (
+        f"🔥 *Tele Link Creator Panel*\n\n"
+        f"👤 Creator: @{user.username or 'unknown'}\n\n"
+        "📊 *Dashboard*\n"
+        f"• Total sales: *{stats['total_sales']}*\n"
+        f"• Total revenue (user payments): *₹{stats['total_revenue']:.2f}*\n"
+        f"• Total earnings (to you): *₹{stats['total_creator']:.2f}*\n\n"
+        "💰 *Wallet*\n"
+        f"• Available balance: *₹{wallet['balance']:.2f}*\n"
+        f"• Lifetime earned: *₹{wallet['total_earned']:.2f}*\n\n"
+        f"_Platform commission ({BRAND_NAME} - {PLATFORM_COMMISSION_PERCENT:.0f}% of each payment) is "
+        "automatically deducted from each sale._"
+    )
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=creator_main_menu_keyboard(),
         parse_mode="Markdown",
-        reply_markup=kb,
     )
 
 
-async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================== /start ==================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await ensure_force_join(update, context):
         return
-    await show_main_menu(update, context)
+    await send_creator_dashboard(update, context)
 
 
-# ----------------- LOGIN FLOW -----------------
+# ================== CALLBACK HANDLER ==================
 
-
-async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_force_join(update, context):
-        return
-
-    contact = update.message.contact
-    context.user_data["phone"] = contact.phone_number
-    context.user_data["login_state"] = "awaiting_referral"
-
-    await update.message.reply_text(
-        "Number verified ✅\n\n"
-        "If any creator referred you, send their *referral code* now.\n"
-        "If not, simply type `no`.",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-
-# ----------------- TEXT HANDLER -----------------
-
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_force_join(update, context):
-        return
-
-    user = update.effective_user
-    msg = (update.message.text or "").strip()
-
-    login_state = context.user_data.get("login_state")
-    flow_state = context.user_data.get("state")
-
-    # ---------- 1) Referral step on first login ----------
-    if login_state == "awaiting_referral":
-        ref_code = None
-        ref_info_text = None
-
-        if msg.lower() != "no":
-            ref_code = msg
-            ref_creator = get_creator_by_referral_code(ref_code)
-            if ref_creator:
-                uname = ref_creator.get("username")
-                if uname:
-                    ref_info_text = f"🎉 You joined using referral code of @{uname}"
-                else:
-                    ref_info_text = "🎉 You joined using a creator's referral code."
-
-        phone = context.user_data.get("phone", "")
-
-        upsert_creator(
-            tg_id=user.id,
-            username=user.username or "",
-            full_name=user.full_name or "",
-            phone=phone,
-            referred_by_code=ref_code,
-        )
-
-        context.user_data["login_state"] = None
-
-        extra = f"\n\n{ref_info_text}" if ref_info_text else ""
-        await update.message.reply_text(
-            "You’re now registered as a TELE LINK Creator 🎉" + extra
-        )
-        await show_main_menu(update, context)
-        return
-
-    # ---------- 2) Create link: waiting for URL ----------
-    if flow_state == "awaiting_url":
-        if not (msg.startswith("http://") or msg.startswith("https://")):
-            await update.message.reply_text(
-                "Please send a *valid* URL starting with http or https.",
-                parse_mode="Markdown",
-            )
-            return
-
-        context.user_data["new_link_url"] = msg
-        context.user_data["state"] = "awaiting_price"
-
-        await update.message.reply_text(
-            "Nice 🔗\nNow send the *price in ₹* that users must pay to unlock this link.\n\nExample: `20`",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ---------- 3) Create link: waiting for price ----------
-    if flow_state == "awaiting_price":
-        if not msg.isdigit():
-            await update.message.reply_text(
-                "Price must be a number in rupees, for example: 10, 20, 50."
-            )
-            return
-
-        price = int(msg)
-        if price <= 0:
-            await update.message.reply_text("Price must be more than 0 ₹.")
-            return
-
-        original_url = context.user_data.get("new_link_url")
-        if not original_url:
-            context.user_data["state"] = None
-            await update.message.reply_text(
-                "Something went wrong, please try creating the link again."
-            )
-            return
-
-        code = create_paid_link(
-            creator_tg_id=user.id,
-            original_url=original_url,
-            price=price,
-        )
-
-        context.user_data["state"] = None
-        context.user_data.pop("new_link_url", None)
-
-        short_link = f"https://t.me/{MAIN_BOT_USERNAME}?start={code}"
-
-        await update.message.reply_text(
-            "✅ *Paid Link Created!*\n\n"
-            f"🔗 Original URL:\n{original_url}\n\n"
-            f"💰 Price per unlock: ₹{price}\n\n"
-            f"Share this link to start earning:\n`{short_link}`",
-            parse_mode="Markdown",
-        )
-
-        title, kb = build_main_menu("TELE LINK Creator Dashboard")
-        await update.message.reply_text("Back to your dashboard 👇", reply_markup=kb)
-        return
-
-    # ---------- 4) Bank / UPI: waiting for UPI ID ----------
-    if flow_state == "awaiting_upi":
-        upi_id = msg
-        set_creator_payout_details(
-            tg_id=user.id,
-            upi_id=upi_id,
-            bank_account=None,
-            bank_ifsc=None,
-        )
-        context.user_data["state"] = None
-        await update.message.reply_text(
-            f"✅ UPI ID saved:\n`{upi_id}`",
-            parse_mode="Markdown",
-        )
-        await show_main_menu(update, context)
-        return
-
-    # ---------- 5) Bank details: waiting for account ----------
-    if flow_state == "awaiting_bank_acc":
-        context.user_data["bank_account"] = msg
-        context.user_data["state"] = "awaiting_bank_ifsc"
-        await update.message.reply_text(
-            "Got it ✅\nNow send your *bank IFSC code* (e.g., `HDFC0001234`).",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ---------- 6) Bank details: waiting for IFSC ----------
-    if flow_state == "awaiting_bank_ifsc":
-        bank_account = context.user_data.get("bank_account")
-        bank_ifsc = msg
-
-        set_creator_payout_details(
-            tg_id=user.id,
-            upi_id=None,
-            bank_account=bank_account,
-            bank_ifsc=bank_ifsc,
-        )
-        context.user_data["state"] = None
-        context.user_data.pop("bank_account", None)
-
-        await update.message.reply_text("✅ Bank details saved.")
-        await show_main_menu(update, context)
-        return
-
-    # ---------- 7) Withdrawal: waiting for amount ----------
-    if flow_state == "awaiting_withdraw_amount":
-        if not msg.isdigit():
-            await update.message.reply_text(
-                "Amount must be a number in rupees, for example: 100, 200."
-            )
-            return
-
-        amount = int(msg)
-        if amount < MIN_WITHDRAW:
-            await update.message.reply_text(
-                f"Minimum withdrawal is ₹{MIN_WITHDRAW}.",
-            )
-            return
-
-        wallet = get_creator_wallet(user.id)
-        if not wallet or wallet["wallet_balance"] < amount:
-            await update.message.reply_text(
-                "You don’t have enough balance to withdraw that amount."
-            )
-            context.user_data["state"] = None
-            return
-
-        method = context.user_data.get("withdraw_method")
-        if method == "upi":
-            upi_id = wallet["upi_id"]
-            ok = create_withdrawal_request(
-                creator_tg_id=user.id,
-                amount=amount,
-                method_type="upi",
-                upi_id=upi_id,
-                bank_account=None,
-                bank_ifsc=None,
-            )
-        else:
-            bank_acc = wallet["bank_account"]
-            bank_ifsc = wallet["bank_ifsc"]
-            ok = create_withdrawal_request(
-                creator_tg_id=user.id,
-                amount=amount,
-                method_type="bank",
-                upi_id=None,
-                bank_account=bank_acc,
-                bank_ifsc=bank_ifsc,
-            )
-
-        context.user_data["state"] = None
-        context.user_data["withdraw_method"] = None
-
-        if not ok:
-            await update.message.reply_text(
-                "You don’t have enough balance to withdraw that amount."
-            )
-            return
-
-        await update.message.reply_text(
-            "✅ Withdrawal request created.\n\n"
-            "Your balance is reduced now. Admin will send payout to your UPI/Bank.\n"
-            "Later this will be *automatic* when payout API is connected."
-        )
-        await show_main_menu(update, context)
-        return
-
-    # ---------- Default ----------
-    await update.message.reply_text(
-        "Use the buttons below or type /menu to open your dashboard 👇"
-    )
-
-
-# ----------------- BUTTON HANDLER -----------------
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_force_join(update, context):
-        return
-
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    await query.answer()
     data = query.data
     user = query.from_user
+    chat_id = query.message.chat.id
 
-    await query.answer()
-
-    # Check after "I Joined"
-    if data == "check_sub":
-        if await ensure_force_join(update, context):
-            await query.message.reply_text(
-                "✅ Thanks for joining TELE LINK Updates!\nHere is your creator dashboard:",
-            )
-            await show_main_menu(update, context)
+    if data == "joined_channel":
+        # After joining, show dashboard
+        fake_update = Update(update.update_id, message=query.message)
+        await send_creator_dashboard(fake_update, context)
         return
 
-    # CREATE LINK
-    if data == "create":
-        context.user_data["state"] = "awaiting_url"
-        await query.edit_message_text(
-            "🔗 *Create Paid Link*\n\n"
-            "Send me the *original URL* you want to lock.",
-            parse_mode="Markdown",
-        )
+    if data == "menu_wallet":
+        await show_wallet_screen(chat_id, user, context)
         return
 
-    # EARNINGS
-    if data == "earnings":
-        wallet = get_creator_wallet(user.id)
-        if not wallet:
-            await query.edit_message_text(
-                "You are not registered as a creator.\nSend /start again."
-            )
-            return
-
-        bal = wallet["wallet_balance"]
-        total = wallet["total_earned"]
-        ref = wallet["referral_earned"]
-
-        text = (
-            "💰 *Your Wallet (TELE LINK)*\n\n"
-            f"Available balance: ₹{bal}\n"
-            f"Total earned: ₹{total}\n"
-            f"From referrals: ₹{ref}\n\n"
-            f"Minimum withdrawal: ₹{MIN_WITHDRAW}"
-        )
-
-        buttons = [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
-        if bal >= MIN_WITHDRAW:
-            buttons.insert(0, [InlineKeyboardButton("📤 Withdraw", callback_data="withdraw")])
-
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+    if data == "menu_create_link":
+        await start_create_link_flow(chat_id, user, context)
         return
 
-    # STATS
-    if data == "stats":
-        links = get_links_for_creator(user.id)
-        if not links:
-            await query.edit_message_text(
-                "📊 You have no links yet.",
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
-                ),
-            )
-            return
+    if data == "menu_my_links":
+        await show_my_links(chat_id, user, context)
+        return
 
-        lines = ["📊 *Your Recent Links:*", ""]
-        for link in links[:5]:
-            lines.append(
-                f"Code: `{link['code']}`\n"
-                f"Price: ₹{link['price']}\n"
-                f"Clicks: {link['clicks']}\n"
-                f"Earnings: ₹{link['earnings']}\n"
-            )
-        text = "\n".join(lines)
+    if data == "menu_stats":
+        await show_stats_screen(chat_id, user, context)
+        return
 
-        await query.edit_message_text(
-            text,
+    if data == "menu_withdraw_history":
+        await show_withdraw_history(chat_id, user, context)
+        return
+
+    if data == "wallet_withdraw":
+        await start_withdraw_flow(chat_id, user, context)
+        return
+
+    if data == "withdraw_method_upi":
+        context.user_data["withdraw"] = {"method": "upi"}
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="💸 *Withdrawal – UPI*\n\nSend your UPI ID (example: `name@upi`).",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
+        )
+        context.user_data["state"] = "await_withdraw_upi"
+        return
+
+    if data == "withdraw_method_bank":
+        context.user_data["withdraw"] = {"method": "bank"}
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "💸 *Withdrawal – Bank Account*\n\n"
+                "Send your bank details in this format:\n"
+                "`IFSC|ACCOUNTNUMBER`\n\n"
+                "Example:\n"
+                "`HDFC0001234|12345678901234`"
             ),
+            parse_mode="Markdown",
         )
+        context.user_data["state"] = "await_withdraw_bank"
         return
 
-    # BANK / UPI
-    if data == "bank":
-        wallet = get_creator_wallet(user.id)
-        upi = wallet["upi_id"] if wallet else None
-        bank_acc = wallet["bank_account"] if wallet else None
-        bank_ifsc = wallet["bank_ifsc"] if wallet else None
-
-        current = "Current payout details:\n"
-        if upi:
-            current += f"• UPI: `{upi}`\n"
-        if bank_acc and bank_ifsc:
-            current += f"• Bank: `{bank_acc}` / `{bank_ifsc}`\n"
-        if not (upi or bank_acc):
-            current += "• None saved yet.\n"
-
-        buttons = [
-            [InlineKeyboardButton("Set UPI ID", callback_data="set_upi")],
-            [InlineKeyboardButton("Set Bank Details", callback_data="set_bank")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
-        ]
-
-        await query.edit_message_text(
-            f"🏦 *Bank / UPI*\n\n{current}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(buttons),
+    if data == "cancel_withdraw":
+        context.user_data.pop("withdraw", None)
+        context.user_data.pop("state", None)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Withdrawal cancelled.",
         )
+        await show_wallet_screen(chat_id, user, context)
         return
 
-    # REFER & EARN
-    if data == "refer":
-        creator = get_creator_by_tg_id(user.id)
-        wallet = get_creator_wallet(user.id)
-        if not creator or not wallet:
-            await query.edit_message_text(
-                "You are not registered as a creator.\nSend /start again."
-            )
-            return
-
-        rcode = creator["referral_code"]
-        ref_earned = wallet["referral_earned"]
-
-        text = (
-            "👥 *Refer & Earn (Money Focus)*\n\n"
-            "Invite other creators to TELE LINK.\n"
-            "Whenever *your referrals* earn from their links, you get *extra 5%* from our platform share.\n\n"
-            f"Your referral code:\n`{rcode}`\n\n"
-            f"Referral earnings till now: ₹{ref_earned}"
+    if data == "cancel_create_link":
+        context.user_data.pop("create_link", None)
+        context.user_data.pop("state", None)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Link creation cancelled.",
         )
+        await send_creator_dashboard(update, context)
+        return
 
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
+
+# ================== WALLET & WITHDRAW ==================
+
+async def show_wallet_screen(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+    wallet = get_wallet(user.id)
+
+    text = (
+        "💰 *Wallet & Earnings*\n\n"
+        f"• Available balance: *₹{wallet['balance']:.2f}*\n"
+        f"• Lifetime earned: *₹{wallet['total_earned']:.2f}*\n\n"
+        f"You can withdraw once your balance is at least *₹{MIN_WITHDRAWAL:.0f}*."
+    )
+
+    buttons = [
+        [
+            InlineKeyboardButton("💸 Withdraw Earnings", callback_data="wallet_withdraw"),
+            InlineKeyboardButton("📊 Stats", callback_data="menu_stats"),
+        ],
+        [
+            InlineKeyboardButton("⬅ Creator Dashboard", callback_data="menu_create_link"),
+        ],
+    ]
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+async def start_withdraw_flow(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+    wallet = get_wallet(user.id)
+
+    if wallet["balance"] < MIN_WITHDRAWAL:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"⚠ Your balance is *₹{wallet['balance']:.2f}*.\n"
+                f"Minimum withdrawal amount is *₹{MIN_WITHDRAWAL:.0f}*."
             ),
+            parse_mode="Markdown",
         )
         return
 
-    # HELP
-    if data == "creator_help":
-        await query.edit_message_text(
-            "❓ *Help*\n\n"
-            "For support or questions, message the admin:\n@TeleShortLinkAdminBot",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
+    text = (
+        "💸 *Withdraw Earnings*\n\n"
+        "Choose how you want to receive your money:"
+    )
+    buttons = [
+        [
+            InlineKeyboardButton("📲 UPI", callback_data="withdraw_method_upi"),
+            InlineKeyboardButton("🏦 Bank Account", callback_data="withdraw_method_bank"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_withdraw")],
+    ]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+# ================== CREATE LINK FLOW ==================
+
+async def start_create_link_flow(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["create_link"] = {}
+    context.user_data["state"] = "await_link_url"
+
+    text = (
+        "🔗 *Create Paid Link*\n\n"
+        "Send the original URL you want to lock.\n\n"
+        "Example: `https://your-website.com/secret-content`"
+    )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_create_link")]]
+        ),
+    )
+
+
+# ================== MY LINKS & STATS ==================
+
+async def show_my_links(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+    links = get_creator_links(user.id)
+    if not links:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="📎 You have not created any paid links yet.",
+        )
+        return
+
+    lines = ["📎 *Your Paid Links:*", ""]
+    for l in links[:20]:
+        code = l["short_code"]
+        price = l["price"]
+        lines.append(
+            f"• `/start {code}` – ₹{price:.2f}"
+        )
+    lines.append("\nUse these `/start <code>` commands in the main bot to share with users.")
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+
+async def show_stats_screen(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+    stats = get_creator_stats(user.id)
+
+    text = (
+        "📊 *Earnings Report*\n\n"
+        f"• Total sales: *{stats['total_sales']}*\n"
+        f"• Total revenue (user payments): *₹{stats['total_revenue']:.2f}*\n"
+        f"• Your share (after {PLATFORM_COMMISSION_PERCENT:.0f}% platform commission): "
+        f"*₹{stats['total_creator']:.2f}*\n\n"
+        f"Platform commission helps Tele Link run payouts, hosting and maintenance."
+    )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="Markdown",
+    )
+
+
+async def show_withdraw_history(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+    withdrawals = get_user_withdrawals(user.id)
+    if not withdrawals:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🧾 You have no withdrawal history yet.",
+        )
+        return
+
+    lines = ["🧾 *Withdrawal History*:", ""]
+    for w in withdrawals[:20]:
+        wid = w["id"]
+        amt = w["amount"]
+        status = w["status"]
+        method = w["method"]
+        created_at = w["created_at"]
+        lines.append(
+            f"• #{wid} – ₹{amt:.2f} – {method.upper()} – *{status}* – {created_at}"
+        )
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(lines),
+        parse_mode="Markdown",
+    )
+
+
+# ================== MESSAGE HANDLER (TEXT FLOWS) ==================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+
+    state = context.user_data.get("state")
+
+    # Flow: creating link – URL
+    if state == "await_link_url":
+        context.user_data["create_link"]["url"] = text
+        context.user_data["state"] = "await_link_price"
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "💰 Great! Now send the price in rupees.\n\n"
+                "Example: `49` (for ₹49)"
             ),
-        )
-        return
-
-    # SET UPI
-    if data == "set_upi":
-        context.user_data["state"] = "awaiting_upi"
-        await query.edit_message_text(
-            "Send your *UPI ID* (example: `name@okicici`).",
             parse_mode="Markdown",
         )
         return
 
-    # SET BANK
-    if data == "set_bank":
-        context.user_data["state"] = "awaiting_bank_acc"
-        await query.edit_message_text(
-            "Send your *bank account number*.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # WITHDRAW
-    if data == "withdraw":
-        wallet = get_creator_wallet(user.id)
-        if not wallet:
-            await query.edit_message_text("You are not registered as a creator.")
-            return
-
-        bal = wallet["wallet_balance"]
-        upi = wallet["upi_id"]
-        bank_acc = wallet["bank_account"]
-        bank_ifsc = wallet["bank_ifsc"]
-
-        if bal < MIN_WITHDRAW:
-            await query.edit_message_text(
-                f"You need at least ₹{MIN_WITHDRAW} to withdraw.",
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
-                ),
-            )
-            return
-
-        if not (upi or (bank_acc and bank_ifsc)):
-            await query.edit_message_text(
-                "You have enough balance, but no payout details saved.\n\n"
-                "Please set UPI or bank details first in *Bank / UPI* menu.",
+    # Flow: creating link – price
+    if state == "await_link_price":
+        try:
+            price = float(text)
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠ Please send a valid positive number for price. Example: `49`",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")]]
+            )
+            return
+
+        url = context.user_data["create_link"]["url"]
+        # generate short code
+        short_code = f"pl_{uuid.uuid4().hex[:8]}"
+
+        # save in DB
+        create_link(short_code, user.id, url, price)
+
+        # clear state
+        context.user_data.pop("create_link", None)
+        context.user_data.pop("state", None)
+
+        text_resp = (
+            "✅ *Paid Link Created!*\n\n"
+            f"Original URL:\n`{url}`\n\n"
+            f"Price: *₹{price:.2f}*\n\n"
+            "Share this command with users to unlock via the main bot:\n"
+            f"`/start {short_code}`\n\n"
+            f"_Make sure users open this in @{MAIN_BOT_USERNAME}_"
+        )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text_resp,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        return
+
+    # Withdrawal – UPI ID
+    if state == "await_withdraw_upi":
+        upi = text
+        wd = context.user_data.get("withdraw") or {}
+        wd["account"] = upi
+        context.user_data["withdraw"] = wd
+        context.user_data["state"] = "await_withdraw_amount"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "✅ UPI ID saved.\n\n"
+                "Now send the amount you want to withdraw (in rupees)."
+            ),
+        )
+        return
+
+    # Withdrawal – Bank details
+    if state == "await_withdraw_bank":
+        bank = text
+        if "|" not in bank:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "⚠ Invalid format. Please send in `IFSC|ACCOUNTNUMBER` format.\n"
+                    "Example: `HDFC0001234|12345678901234`"
                 ),
+                parse_mode="Markdown",
+            )
+            return
+        wd = context.user_data.get("withdraw") or {}
+        wd["account"] = bank
+        context.user_data["withdraw"] = wd
+        context.user_data["state"] = "await_withdraw_amount"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "✅ Bank details saved.\n\n"
+                "Now send the amount you want to withdraw (in rupees)."
+            ),
+        )
+        return
+
+    # Withdrawal – Amount
+    if state == "await_withdraw_amount":
+        try:
+            amount = float(text)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠ Please send a valid positive amount.",
             )
             return
 
-        # both methods available → choose
-        if upi and bank_acc and bank_ifsc:
-            buttons = [
-                [InlineKeyboardButton("Withdraw to UPI", callback_data="withdraw_upi")],
-                [InlineKeyboardButton("Withdraw to Bank", callback_data="withdraw_bank")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
-            ]
-            await query.edit_message_text(
-                f"Your balance: ₹{bal}\n\nChoose withdrawal method:",
-                reply_markup=InlineKeyboardMarkup(buttons),
+        wd = context.user_data.get("withdraw") or {}
+        method = wd.get("method")
+        account = wd.get("account")
+
+        if not method or not account:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Something went wrong with withdrawal data. Please try again.",
             )
+            context.user_data.pop("withdraw", None)
+            context.user_data.pop("state", None)
             return
 
-        # only one method
-        if upi:
-            context.user_data["withdraw_method"] = "upi"
+        # Create withdrawal in DB (deduct from wallet)
+        ok, msg = create_withdrawal(user.id, amount, method, account)
+        await context.bot.send_message(chat_id=chat_id, text=msg)
+
+        if not ok:
+            # do not attempt payout
+            context.user_data.pop("withdraw", None)
+            context.user_data.pop("state", None)
+            return
+
+        # Attempt to get the latest pending withdrawal for this user
+        withdrawals = get_user_withdrawals(user.id)
+        pending_id = None
+        if withdrawals:
+            for w in withdrawals:
+                if w["status"] == "pending" and abs(w["amount"] - amount) < 0.001:
+                    pending_id = w["id"]
+                    break
+            if pending_id is None:
+                pending_id = withdrawals[0]["id"]
+
+        # Call payout API
+        success = False
+        ref = ""
+        payout_msg = ""
+        if pending_id is not None:
+            success, ref, payout_msg = send_payout(
+                amount=amount,
+                method=method,
+                account=account,
+                name=update.effective_user.username or "Tele Link User",
+                withdrawal_id=pending_id,
+            )
+            if success:
+                set_withdrawal_status(pending_id, "paid", external_ref=ref)
+            else:
+                set_withdrawal_status(pending_id, "failed", external_ref=ref or "")
+
+        # Notify creator
+        final_text = "💸 *Withdrawal Request Created*\n\n" + msg
+        if pending_id is not None:
+            final_text += f"\n\nPayout status: {payout_msg or ('Success' if success else 'Failed')}"
+            if ref:
+                final_text += f"\nReference ID: `{ref}`"
         else:
-            context.user_data["withdraw_method"] = "bank"
+            final_text += "\n\n(Unable to find withdrawal record for auto payout.)"
 
-        context.user_data["state"] = "awaiting_withdraw_amount"
-        await query.edit_message_text(
-            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=final_text,
             parse_mode="Markdown",
         )
+
+        # Notify admin/owner
+        try:
+            if pending_id is not None:
+                await context.bot.send_message(
+                    chat_id=OWNER_TG_ID,
+                    text=(
+                        f"🧾 *Payout Event*\n\n"
+                        f"Creator: @{update.effective_user.username or 'unknown'} (ID: {user.id})\n"
+                        f"Withdrawal ID: #{pending_id}\n"
+                        f"Amount: ₹{amount:.2f}\n"
+                        f"Method: {method.upper()} – {account}\n"
+                        f"Result: {'SUCCESS' if success else 'FAILED'}\n"
+                        f"Message: {payout_msg}\n"
+                        f"Reference: {ref or '-'}"
+                    ),
+                    parse_mode="Markdown",
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to notify owner about payout: %s", e)
+
+        # Clear state
+ context.user_data.pop("withdraw", None)
+        context.user_data.pop("state", None)
+
         return
 
-    # WITHDRAW via UPI
-    if data == "withdraw_upi":
-        wallet = get_creator_wallet(user.id)
-        bal = wallet["wallet_balance"] if wallet else 0
-
-        context.user_data["withdraw_method"] = "upi"
-        context.user_data["state"] = "awaiting_withdraw_amount"
-
-        await query.edit_message_text(
-            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # WITHDRAW via BANK
-    if data == "withdraw_bank":
-        wallet = get_creator_wallet(user.id)
-        bal = wallet["wallet_balance"] if wallet else 0
-
-        context.user_data["withdraw_method"] = "bank"
-        context.user_data["state"] = "awaiting_withdraw_amount"
-
-        await query.edit_message_text(
-            f"Your balance: ₹{bal}\n\nSend the *amount in ₹* you want to withdraw.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # BACK TO MENU
-    if data == "back_menu":
-        await show_main_menu(update, context)
-        return
+    # Default: if no active state, maybe re-show dashboard
+    await send_creator_dashboard(update, context)
 
 
-# ----------------- MAIN -----------------
+# ================== MAIN ==================
 
-
-def main():
-    init_db()
+def main() -> None:
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu_cmd))
-    app.add_handler(MessageHandler(filters.CONTACT, save_contact))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
+    logger.info("Creator bot started.")
     app.run_polling()
 
 

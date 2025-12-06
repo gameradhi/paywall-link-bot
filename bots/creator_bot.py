@@ -4,7 +4,7 @@
 
 import logging
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 from telegram import (
     Update,
@@ -41,8 +41,8 @@ BOT_TOKEN = "8280706073:AAED9i2p0TP42pPf9vMXoTt_HYGxqEuyy2w"
 BRAND_NAME = "Tele Link"
 MAIN_BOT_USERNAME = "TeleShortLinkBot"
 
-PLATFORM_COMMISSION_PERCENT = 10.0  # 10% commission for Tele Link
-MIN_WITHDRAWAL = 100.0
+PLATFORM_COMMISSION_PERCENT = 10.0  # 10% platform commission
+MIN_WITHDRAWAL = 100.0              # minimum withdrawable amount
 
 # Force-join channel
 FORCE_CHANNEL_ID = -1003472900442
@@ -120,7 +120,10 @@ def creator_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🧾 Withdrawal History", callback_data="menu_withdraw_history"),
             ],
             [
-                InlineKeyboardButton(f"⬅ Back to @{MAIN_BOT_USERNAME}", url=f"https://t.me/{MAIN_BOT_USERNAME}"),
+                InlineKeyboardButton(
+                    f"⬅ Back to @{MAIN_BOT_USERNAME}",
+                    url=f"https://t.me/{MAIN_BOT_USERNAME}",
+                ),
             ],
         ]
     )
@@ -139,12 +142,12 @@ async def send_creator_dashboard(update: Update, context: ContextTypes.DEFAULT_T
     wallet = get_wallet(user.id)
 
     text = (
-        f"🔥 *Tele Link Creator Panel*\n\n"
+        f"🔥 *{BRAND_NAME} Creator Panel*\n\n"
         f"👤 Creator: @{user.username or 'unknown'}\n\n"
         "📊 *Dashboard*\n"
         f"• Total sales: *{stats['total_sales']}*\n"
         f"• Total revenue (user payments): *₹{stats['total_revenue']:.2f}*\n"
-        f"• Total earnings (to you): *₹{stats['total_creator']:.2f}*\n\n"
+        f"• Total earnings (your share): *₹{stats['total_creator']:.2f}*\n\n"
         "💰 *Wallet*\n"
         f"• Available balance: *₹{wallet['balance']:.2f}*\n"
         f"• Lifetime earned: *₹{wallet['total_earned']:.2f}*\n\n"
@@ -168,92 +171,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send_creator_dashboard(update, context)
 
 
-# ================== CALLBACK HANDLER ==================
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user = query.from_user
-    chat_id = query.message.chat.id
-
-    if data == "joined_channel":
-        # After joining, show dashboard
-        fake_update = Update(update.update_id, message=query.message)
-        await send_creator_dashboard(fake_update, context)
-        return
-
-    if data == "menu_wallet":
-        await show_wallet_screen(chat_id, user, context)
-        return
-
-    if data == "menu_create_link":
-        await start_create_link_flow(chat_id, user, context)
-        return
-
-    if data == "menu_my_links":
-        await show_my_links(chat_id, user, context)
-        return
-
-    if data == "menu_stats":
-        await show_stats_screen(chat_id, user, context)
-        return
-
-    if data == "menu_withdraw_history":
-        await show_withdraw_history(chat_id, user, context)
-        return
-
-    if data == "wallet_withdraw":
-        await start_withdraw_flow(chat_id, user, context)
-        return
-
-    if data == "withdraw_method_upi":
-        context.user_data["withdraw"] = {"method": "upi"}
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="💸 *Withdrawal – UPI*\n\nSend your UPI ID (example: `name@upi`).",
-            parse_mode="Markdown",
-        )
-        context.user_data["state"] = "await_withdraw_upi"
-        return
-
-    if data == "withdraw_method_bank":
-        context.user_data["withdraw"] = {"method": "bank"}
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "💸 *Withdrawal – Bank Account*\n\n"
-                "Send your bank details in this format:\n"
-                "`IFSC|ACCOUNTNUMBER`\n\n"
-                "Example:\n"
-                "`HDFC0001234|12345678901234`"
-            ),
-            parse_mode="Markdown",
-        )
-        context.user_data["state"] = "await_withdraw_bank"
-        return
-
-    if data == "cancel_withdraw":
-        context.user_data.pop("withdraw", None)
-        context.user_data.pop("state", None)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="❌ Withdrawal cancelled.",
-        )
-        await show_wallet_screen(chat_id, user, context)
-        return
-
-    if data == "cancel_create_link":
-        context.user_data.pop("create_link", None)
-        context.user_data.pop("state", None)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="❌ Link creation cancelled.",
-        )
-        await send_creator_dashboard(update, context)
-        return
-
-
 # ================== WALLET & WITHDRAW ==================
 
 async def show_wallet_screen(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -269,10 +186,10 @@ async def show_wallet_screen(chat_id: int, user, context: ContextTypes.DEFAULT_T
     buttons = [
         [
             InlineKeyboardButton("💸 Withdraw Earnings", callback_data="wallet_withdraw"),
-            InlineKeyboardButton("📊 Stats", callback_data="menu_stats"),
+            InlineKeyboardButton("📊 Earnings Report", callback_data="menu_stats"),
         ],
         [
-            InlineKeyboardButton("⬅ Creator Dashboard", callback_data="menu_create_link"),
+            InlineKeyboardButton("⬅ Creator Dashboard", callback_data="back_dashboard"),
         ],
     ]
 
@@ -338,7 +255,7 @@ async def start_create_link_flow(chat_id: int, user, context: ContextTypes.DEFAU
     )
 
 
-# ================== MY LINKS & STATS ==================
+# ================== MY LINKS & STATS & HISTORY ==================
 
 async def show_my_links(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     links = get_creator_links(user.id)
@@ -349,14 +266,14 @@ async def show_my_links(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
-    lines = ["📎 *Your Paid Links:*", ""]
+    lines: List[str] = ["📎 *Your Paid Links:*", ""]
     for l in links[:20]:
         code = l["short_code"]
         price = l["price"]
         lines.append(
             f"• `/start {code}` – ₹{price:.2f}"
         )
-    lines.append("\nUse these `/start <code>` commands in the main bot to share with users.")
+    lines.append("\nShare these `/start <code>` commands with your users in the main bot.")
     await context.bot.send_message(
         chat_id=chat_id,
         text="\n".join(lines),
@@ -374,7 +291,7 @@ async def show_stats_screen(chat_id: int, user, context: ContextTypes.DEFAULT_TY
         f"• Total revenue (user payments): *₹{stats['total_revenue']:.2f}*\n"
         f"• Your share (after {PLATFORM_COMMISSION_PERCENT:.0f}% platform commission): "
         f"*₹{stats['total_creator']:.2f}*\n\n"
-        f"Platform commission helps Tele Link run payouts, hosting and maintenance."
+        f"{BRAND_NAME} commission helps run payouts, hosting and platform maintenance."
     )
     await context.bot.send_message(
         chat_id=chat_id,
@@ -392,7 +309,7 @@ async def show_withdraw_history(chat_id: int, user, context: ContextTypes.DEFAUL
         )
         return
 
-    lines = ["🧾 *Withdrawal History*:", ""]
+    lines: List[str] = ["🧾 *Withdrawal History*:", ""]
     for w in withdrawals[:20]:
         wid = w["id"]
         amt = w["amount"]
@@ -410,6 +327,95 @@ async def show_withdraw_history(chat_id: int, user, context: ContextTypes.DEFAUL
     )
 
 
+# ================== CALLBACK HANDLER ==================
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+    chat_id = query.message.chat.id
+
+    if data == "joined_channel":
+        # after join, show dashboard
+        await send_creator_dashboard(update, context)
+        return
+
+    if data == "menu_wallet":
+        await show_wallet_screen(chat_id, user, context)
+        return
+
+    if data == "menu_create_link":
+        await start_create_link_flow(chat_id, user, context)
+        return
+
+    if data == "menu_my_links":
+        await show_my_links(chat_id, user, context)
+        return
+
+    if data == "menu_stats":
+        await show_stats_screen(chat_id, user, context)
+        return
+
+    if data == "menu_withdraw_history":
+        await show_withdraw_history(chat_id, user, context)
+        return
+
+    if data == "wallet_withdraw":
+        await start_withdraw_flow(chat_id, user, context)
+        return
+
+    if data == "withdraw_method_upi":
+        context.user_data["withdraw"] = {"method": "upi"}
+        context.user_data["state"] = "await_withdraw_upi"
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="💸 *Withdrawal – UPI*\n\nSend your UPI ID (example: `name@upi`).",
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "withdraw_method_bank":
+        context.user_data["withdraw"] = {"method": "bank"}
+        context.user_data["state"] = "await_withdraw_bank"
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "💸 *Withdrawal – Bank Account*\n\n"
+                "Send your bank details in this format:\n"
+                "`IFSC|ACCOUNTNUMBER`\n\n"
+                "Example:\n"
+                "`HDFC0001234|12345678901234`"
+            ),
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "cancel_withdraw":
+        context.user_data.pop("withdraw", None)
+        context.user_data.pop("state", None)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Withdrawal cancelled.",
+        )
+        await show_wallet_screen(chat_id, user, context)
+        return
+
+    if data == "cancel_create_link":
+        context.user_data.pop("create_link", None)
+        context.user_data.pop("state", None)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Link creation cancelled.",
+        )
+        await send_creator_dashboard(update, context)
+        return
+
+    if data == "back_dashboard":
+        await send_creator_dashboard(update, context)
+        return
+
+
 # ================== MESSAGE HANDLER (TEXT FLOWS) ==================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -422,7 +428,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     state = context.user_data.get("state")
 
-    # Flow: creating link – URL
+    # -------- Create Link: URL --------
     if state == "await_link_url":
         context.user_data["create_link"]["url"] = text
         context.user_data["state"] = "await_link_price"
@@ -436,7 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Flow: creating link – price
+    # -------- Create Link: Price --------
     if state == "await_link_price":
         try:
             price = float(text)
@@ -451,13 +457,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         url = context.user_data["create_link"]["url"]
-        # generate short code
         short_code = f"pl_{uuid.uuid4().hex[:8]}"
 
-        # save in DB
         create_link(short_code, user.id, url, price)
 
-        # clear state
         context.user_data.pop("create_link", None)
         context.user_data.pop("state", None)
 
@@ -477,7 +480,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Withdrawal – UPI ID
+    # -------- Withdrawal: UPI --------
     if state == "await_withdraw_upi":
         upi = text
         wd = context.user_data.get("withdraw") or {}
@@ -494,7 +497,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Withdrawal – Bank details
+    # -------- Withdrawal: Bank --------
     if state == "await_withdraw_bank":
         bank = text
         if "|" not in bank:
@@ -521,8 +524,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Withdrawal – Amount
+    # -------- Withdrawal: Amount --------
     if state == "await_withdraw_amount":
+        # 1) Parse amount
         try:
             amount = float(text)
             if amount <= 0:
@@ -530,10 +534,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="⚠ Please send a valid positive amount."
+                text="⚠ Please send a valid positive amount (for example: 150 or 150.50).",
             )
             return
 
+        # 2) Read data stored from previous steps
         wd = context.user_data.get("withdraw") or {}
         method = wd.get("method")
         account = wd.get("account")
@@ -541,12 +546,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not method or not account:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="❌ Something went wrong while reading details. Please try again."
+                text=(
+                    "❌ Something went wrong while reading your withdrawal details.\n"
+                    "Please start again from *Withdraw* in the main menu."
+                ),
+                parse_mode="Markdown",
             )
             context.user_data.pop("withdraw", None)
             context.user_data.pop("state", None)
             return
 
+        # 3) Create withdrawal in DB (also deducts from wallet)
         ok, msg = create_withdrawal(user.id, amount, method, account)
         await context.bot.send_message(chat_id=chat_id, text=msg)
 
@@ -555,110 +565,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data.pop("state", None)
             return
 
+        # 4) Find the pending withdrawal we just created
         withdrawals = get_user_withdrawals(user.id)
-        pending_id = None
+        pending_id: Optional[int] = None
         if withdrawals:
             for w in withdrawals:
                 if w["status"] == "pending" and abs(w["amount"] - amount) < 0.001:
                     pending_id = w["id"]
                     break
             if pending_id is None:
-                pending_id = withdrawals[0]["id"]
+                pending_id = withdrawals[-1]["id"]
 
+        # 5) Try payout via Cashfree (using payouts.py)
         success, ref, payout_msg = False, "", ""
         if pending_id is not None:
             success, ref, payout_msg = send_payout(
                 amount=amount,
                 method=method,
                 account=account,
-                name=update.effective_user.username or "Tele Link User",
+                name=user.username or "Tele Link",
                 withdrawal_id=pending_id,
             )
+
             if success:
                 set_withdrawal_status(pending_id, "paid", external_ref=ref)
             else:
                 set_withdrawal_status(pending_id, "failed", external_ref=ref)
 
+             # 6) Build final message for creator
         final_text = "💸 *Withdrawal Created*\n\n" + msg
         if pending_id is not None:
-            final_text += f"\n\nPayout: {'SUCCESS' if success else 'FAILED'}"
+            final_text += f"\n\nPayout: {'✅ SUCCESS' if success else '❌ FAILED'}"
             if payout_msg:
                 final_text += f"\nMessage: {payout_msg}"
             if ref:
                 final_text += f"\nReference: `{ref}`"
-
-        await context.bot.send_message(
-            chat_id=chat_id, text=final_text, parse_mode="Markdown"
-        )
-
-        try:
-            if pending_id is not None:
-                await context.bot.send_message(
-                    chat_id=OWNER_TG_ID,
-                    text=(
-                        f"🧾 *Payout Event*\n\n"
-                        f"Creator: @{update.effective_user.username or 'unknown'}\n"
-                        f"Withdrawal ID: #{pending_id}\n"
-                        f"Amount: ₹{amount:.2f}\n"
-                        f"Method: {method.upper()} – {account}\n"
-                        f"Status: {'SUCCESS' if success else 'FAILED'}\n"
-                        f"Reference: {ref or '-'}"
-                    ),
-                    parse_mode="Markdown"
-                )
-        except Exception as e:
-            logger.error("Owner notify failed: %s", e)
-
-        context.user_data.pop("withdraw", None)
-        context.user_data.pop("state", None)
-        return
-
-        # Create withdrawal in DB (deduct from wallet)
-        ok, msg = create_withdrawal(user.id, amount, method, account)
-        await context.bot.send_message(chat_id=chat_id, text=msg)
-
-        if not ok:
-            # do not attempt payout
-            context.user_data.pop("withdraw", None)
-            context.user_data.pop("state", None)
-            return
-
-        # Attempt to get the latest pending withdrawal for this user
-        withdrawals = get_user_withdrawals(user.id)
-        pending_id = None
-        if withdrawals:
-            for w in withdrawals:
-                if w["status"] == "pending" and abs(w["amount"] - amount) < 0.001:
-                    pending_id = w["id"]
-                    break
-            if pending_id is None:
-                pending_id = withdrawals[0]["id"]
-
-        # Call payout API
-        success = False
-        ref = ""
-        payout_msg = ""
-        if pending_id is not None:
-            success, ref, payout_msg = send_payout(
-                amount=amount,
-                method=method,
-                account=account,
-                name=update.effective_user.username or "Tele Link User",
-                withdrawal_id=pending_id,
-            )
-            if success:
-                set_withdrawal_status(pending_id, "paid", external_ref=ref)
-            else:
-                set_withdrawal_status(pending_id, "failed", external_ref=ref or "")
-
-        # Notify creator
-        final_text = "💸 *Withdrawal Request Created*\n\n" + msg
-        if pending_id is not None:
-            final_text += f"\n\nPayout status: {payout_msg or ('Success' if success else 'Failed')}"
-            if ref:
-                final_text += f"\nReference ID: `{ref}`"
-        else:
-            final_text += "\n\n(Unable to find withdrawal record for auto payout.)"
 
         await context.bot.send_message(
             chat_id=chat_id,
@@ -666,19 +607,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown",
         )
 
-        # Notify admin/owner
+        # 7) Notify admin (you)
         try:
             if pending_id is not None:
                 await context.bot.send_message(
                     chat_id=OWNER_TG_ID,
                     text=(
-                        f"🧾 *Payout Event*\n\n"
-                        f"Creator: @{update.effective_user.username or 'unknown'} (ID: {user.id})\n"
+                        "🧾 *Payout Event*\n\n"
+                        f"Creator: @{user.username or 'unknown'} (ID: {user.id})\n"
                         f"Withdrawal ID: #{pending_id}\n"
                         f"Amount: ₹{amount:.2f}\n"
                         f"Method: {method.upper()} – {account}\n"
-                        f"Result: {'SUCCESS' if success else 'FAILED'}\n"
-                        f"Message: {payout_msg}\n"
+                        f"Status: {'SUCCESS' if success else 'FAILED'}\n"
                         f"Reference: {ref or '-'}"
                     ),
                     parse_mode="Markdown",
@@ -686,13 +626,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to notify owner about payout: %s", e)
 
-        # Clear state
- context.user_data.pop("withdraw", None)
+        # 8) Clear state
+        context.user_data.pop("withdraw", None)
         context.user_data.pop("state", None)
-
         return
 
-    # Default: if no active state, maybe re-show dashboard
+    # -------- Default: Show dashboard again --------
     await send_creator_dashboard(update, context)
 
 
@@ -711,3 +650,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    

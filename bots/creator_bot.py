@@ -530,7 +530,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="⚠ Please send a valid positive amount.",
+                text="⚠ Please send a valid positive amount."
             )
             return
 
@@ -541,11 +541,77 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not method or not account:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="❌ Something went wrong with withdrawal data. Please try again.",
+                text="❌ Something went wrong while reading details. Please try again."
             )
             context.user_data.pop("withdraw", None)
             context.user_data.pop("state", None)
             return
+
+        ok, msg = create_withdrawal(user.id, amount, method, account)
+        await context.bot.send_message(chat_id=chat_id, text=msg)
+
+        if not ok:
+            context.user_data.pop("withdraw", None)
+            context.user_data.pop("state", None)
+            return
+
+        withdrawals = get_user_withdrawals(user.id)
+        pending_id = None
+        if withdrawals:
+            for w in withdrawals:
+                if w["status"] == "pending" and abs(w["amount"] - amount) < 0.001:
+                    pending_id = w["id"]
+                    break
+            if pending_id is None:
+                pending_id = withdrawals[0]["id"]
+
+        success, ref, payout_msg = False, "", ""
+        if pending_id is not None:
+            success, ref, payout_msg = send_payout(
+                amount=amount,
+                method=method,
+                account=account,
+                name=update.effective_user.username or "Tele Link User",
+                withdrawal_id=pending_id,
+            )
+            if success:
+                set_withdrawal_status(pending_id, "paid", external_ref=ref)
+            else:
+                set_withdrawal_status(pending_id, "failed", external_ref=ref)
+
+        final_text = "💸 *Withdrawal Created*\n\n" + msg
+        if pending_id is not None:
+            final_text += f"\n\nPayout: {'SUCCESS' if success else 'FAILED'}"
+            if payout_msg:
+                final_text += f"\nMessage: {payout_msg}"
+            if ref:
+                final_text += f"\nReference: `{ref}`"
+
+        await context.bot.send_message(
+            chat_id=chat_id, text=final_text, parse_mode="Markdown"
+        )
+
+        try:
+            if pending_id is not None:
+                await context.bot.send_message(
+                    chat_id=OWNER_TG_ID,
+                    text=(
+                        f"🧾 *Payout Event*\n\n"
+                        f"Creator: @{update.effective_user.username or 'unknown'}\n"
+                        f"Withdrawal ID: #{pending_id}\n"
+                        f"Amount: ₹{amount:.2f}\n"
+                        f"Method: {method.upper()} – {account}\n"
+                        f"Status: {'SUCCESS' if success else 'FAILED'}\n"
+                        f"Reference: {ref or '-'}"
+                    ),
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.error("Owner notify failed: %s", e)
+
+        context.user_data.pop("withdraw", None)
+        context.user_data.pop("state", None)
+        return
 
         # Create withdrawal in DB (deduct from wallet)
         ok, msg = create_withdrawal(user.id, amount, method, account)

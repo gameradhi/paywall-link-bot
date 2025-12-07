@@ -4,7 +4,18 @@
 
 import logging
 import uuid
+import os
+import sys
 from typing import Dict, Any, Optional, List
+
+# ---- PATH FIXES ----
+# Make sure we can import db.py (in project root) and payouts.py (in bots/)
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # /app
+BOTS_DIR = os.path.dirname(__file__)                   # /app/bots
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+if BOTS_DIR not in sys.path:
+    sys.path.append(BOTS_DIR)
 
 from telegram import (
     Update,
@@ -32,7 +43,7 @@ from db import (
     set_withdrawal_status,
 )
 
-from bots.payouts import send_payout
+from payouts import send_payout
 
 # ================== CONFIG ==================
 
@@ -592,7 +603,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 set_withdrawal_status(pending_id, "failed", external_ref=ref)
 
-             # 6) Build final message for creator
+        # 6) Build final message for creator
         final_text = "💸 *Withdrawal Created*\n\n" + msg
         if pending_id is not None:
             final_text += f"\n\nPayout: {'✅ SUCCESS' if success else '❌ FAILED'}"
@@ -612,7 +623,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if pending_id is not None:
                 await context.bot.send_message(
                     chat_id=OWNER_TG_ID,
-                    text=(
+                                       text=(
                         "🧾 *Payout Event*\n\n"
                         f"Creator: @{user.username or 'unknown'} (ID: {user.id})\n"
                         f"Withdrawal ID: #{pending_id}\n"

@@ -109,7 +109,7 @@ async def ensure_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "After joining, tap *I Joined* below."
         ),
         reply_markup=keyboard,
-        parse_mode="Markdown",
+       
     )
     return False
 
@@ -170,7 +170,7 @@ async def send_creator_dashboard(update: Update, context: ContextTypes.DEFAULT_T
         chat_id=chat_id,
         text=text,
         reply_markup=creator_main_menu_keyboard(),
-        parse_mode="Markdown",
+        
     )
 
 
@@ -208,7 +208,7 @@ async def show_wallet_screen(chat_id: int, user, context: ContextTypes.DEFAULT_T
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown",
+        
     )
 
 
@@ -222,7 +222,7 @@ async def start_withdraw_flow(chat_id: int, user, context: ContextTypes.DEFAULT_
                 f"⚠ Your balance is *₹{wallet['balance']:.2f}*.\n"
                 f"Minimum withdrawal amount is *₹{MIN_WITHDRAWAL:.0f}*."
             ),
-            parse_mode="Markdown",
+            
         )
         return
 
@@ -241,7 +241,7 @@ async def start_withdraw_flow(chat_id: int, user, context: ContextTypes.DEFAULT_
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown",
+       
     )
 
 
@@ -259,7 +259,7 @@ async def start_create_link_flow(chat_id: int, user, context: ContextTypes.DEFAU
     await context.bot.send_message(
         chat_id=chat_id,
         text=text,
-        parse_mode="Markdown",
+        
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_create_link")]]
         ),
@@ -287,7 +287,7 @@ async def show_my_links(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) 
     await context.bot.send_message(
         chat_id=chat_id,
         text="\n".join(lines),
-        parse_mode="Markdown",
+       
         disable_web_page_preview=True,
     )
 
@@ -306,7 +306,7 @@ async def show_stats_screen(chat_id: int, user, context: ContextTypes.DEFAULT_TY
     await context.bot.send_message(
         chat_id=chat_id,
         text=text,
-        parse_mode="Markdown",
+        
     )
 
 
@@ -333,7 +333,7 @@ async def show_withdraw_history(chat_id: int, user, context: ContextTypes.DEFAUL
     await context.bot.send_message(
         chat_id=chat_id,
         text="\n".join(lines),
-        parse_mode="Markdown",
+        
     )
 
 
@@ -381,7 +381,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await context.bot.send_message(
             chat_id=chat_id,
             text="💸 *Withdrawal – UPI*\n\nSend your UPI ID (example: `name@upi`).",
-            parse_mode="Markdown",
+            
         )
         return
 
@@ -397,7 +397,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "Example:\n"
                 "`HDFC0001234|12345678901234`"
             ),
-            parse_mode="Markdown",
+            
         )
         return
 
@@ -448,7 +448,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "💰 Great! Now send the price in rupees.\n\n"
                 "Example: `49` (for ₹49)"
             ),
-            parse_mode="Markdown",
+            
         )
         return
 
@@ -462,7 +462,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="⚠ Please send a valid positive number for price. Example: `49`",
-                parse_mode="Markdown",
+                
             )
             return
 
@@ -519,7 +519,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "⚠ Invalid format. Please send in `IFSC|ACCOUNTNUMBER` format.\n"
                     "Example: `HDFC0001234|12345678901234`"
                 ),
-                parse_mode="Markdown",
+                
             )
             return
         wd = context.user_data.get("withdraw") or {}
@@ -562,7 +562,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "❌ Something went wrong while reading your withdrawal details.\n"
                     "Please start again from *Withdraw* in the main menu."
                 ),
-                parse_mode="Markdown",
+                
             )
             context.user_data.pop("withdraw", None)
             context.user_data.pop("state", None)
@@ -616,7 +616,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await context.bot.send_message(
             chat_id=chat_id,
             text=final_text,
-            parse_mode="Markdown",
+            
         )
 
         # 7) Notify admin (you)
@@ -633,7 +633,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         f"Status: {'SUCCESS' if success else 'FAILED'}\n"
                         f"Reference: {ref or '-'}"
                     ),
-                    parse_mode="Markdown",
+                    
                 )
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to notify owner about payout: %s", e)

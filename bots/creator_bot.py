@@ -281,10 +281,9 @@ async def show_my_links(chat_id: int, user, context: ContextTypes.DEFAULT_TYPE) 
     for l in links[:20]:
         code = l["short_code"]
         price = l["price"]
-        lines.append(
-            f"• `/start {code}` – ₹{price:.2f}"
-        )
-    lines.append("\nShare these `/start <code>` commands with your users in the main bot.")
+        public_link = f"https://t.me/{MAIN_BOT_USERNAME}?start={code}"
+        lines.append(f"• {public_link} – ₹{price:.2f}")
+    lines.append("\nShare these links with your users.")
     await context.bot.send_message(
         chat_id=chat_id,
         text="\n".join(lines),
@@ -475,13 +474,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop("create_link", None)
         context.user_data.pop("state", None)
 
+        public_link = f"https://t.me/{MAIN_BOT_USERNAME}?start={short_code}"
+
         text_resp = (
             "✅ *Paid Link Created!*\n\n"
             f"Original URL:\n`{url}`\n\n"
             f"Price: *₹{price:.2f}*\n\n"
-            "Share this command with users to unlock via the main bot:\n"
-            f"`/start {short_code}`\n\n"
-            f"_Make sure users open this in @{MAIN_BOT_USERNAME}_"
+            "Share this link with your users to unlock via the main bot:\n"
+            f"{public_link}\n\n"
+            f"_Users must open the link in @{MAIN_BOT_USERNAME}_"
         )
         await context.bot.send_message(
             chat_id=chat_id,
@@ -623,7 +624,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if pending_id is not None:
                 await context.bot.send_message(
                     chat_id=OWNER_TG_ID,
-                                       text=(
+                    text=(
                         "🧾 *Payout Event*\n\n"
                         f"Creator: @{user.username or 'unknown'} (ID: {user.id})\n"
                         f"Withdrawal ID: #{pending_id}\n"
@@ -661,4 +662,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

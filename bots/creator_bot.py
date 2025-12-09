@@ -4,6 +4,14 @@
 
 import logging
 import uuid
+import os
+import sys
+
+# ===== FIX PYTHON PATH SO WE CAN IMPORT db.py FROM PROJECT ROOT =====
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
 
 from telegram import (
     Update,
@@ -30,7 +38,6 @@ MAIN_BOT_USERNAME = "TeleShortLinkBot"  # without @
 BRAND_NAME = "TELE LINK"
 
 # ========= DB IMPORT =========
-# db.py is in project root (/app/db.py) so simple import works.
 from db import init_db, create_paid_link, get_creator_stats
 
 # ========= LOGGING =========
@@ -112,15 +119,14 @@ async def on_create_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop(TEMP_URL_KEY, None)
 
     text = (
-        "🧷 *Create a Paid Link*\n\n"
-        "Send me the **original URL** you want to lock.\n"
+        "🧷 Create a Paid Link\n\n"
+        "Send me the original URL you want to lock.\n"
         "Example:\n"
         "https://t.me/TeleShortLinkCreatorBot\n\n"
-        "Make sure it starts with `http://` or `https://`."
+        "Make sure it starts with http:// or https://."
     )
 
-    # We removed parse_mode, so keep plain text / simple markdown-like, but no parse
-    await query.message.reply_text(text.replace("*", "").replace("`", ""))
+    await query.message.reply_text(text)
 
 
 async def on_creator_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -129,7 +135,7 @@ async def on_creator_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
 
     tg_id = update.effective_user.id
-    stats = get_creator_stats(tg_id)  # You already have this in db.py
+    stats = get_creator_stats(tg_id)  # implemented in db.py
 
     total_links = stats.get("total_links", 0)
     total_earned = stats.get("total_earned_rupees", 0.0)
@@ -155,7 +161,7 @@ async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = (
         f"❓ How {BRAND_NAME} Creator Bot works:\n\n"
-        "1) Tap *Create Paid Link*.\n"
+        "1) Tap Create Paid Link.\n"
         "2) Send the original URL you want to lock.\n"
         "3) Send the price in rupees.\n"
         "4) You will get a special unlock link like:\n"
@@ -167,9 +173,12 @@ async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "You earn commission from each successful unlock."
     )
 
-    await query.message.reply_text(text.replace("*", ""), reply_markup=InlineKeyboardMarkup(
-        [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu")]]
-    ))
+    await query.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu")]]
+        ),
+    )
 
 
 # ========= MESSAGE HANDLER FOR CREATE FLOW =========
@@ -177,7 +186,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Handle plain text messages based on simple state machine."""
     user_state = context.user_data.get(STATE_KEY)
 
-    # If user not in any flow, ignore / or show menu
+    # If user not in any flow, show menu
     if not user_state:
         await send_main_menu(update, context)
         return
@@ -209,7 +218,7 @@ async def handle_original_url(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text(
         "✅ Got your URL.\n\n"
-        "Now send the *price in ₹* that users must pay to unlock this link.\n"
+        "Now send the price in ₹ that users must pay to unlock this link.\n"
         "Example: 20"
     )
 
